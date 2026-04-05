@@ -6,6 +6,7 @@ __pycache__/
 # runtime outputs
 kb/
 kb_full/
+zh-CN.txt
 codex.translation.job.json
 codex.translation.result.json
 codex.repair.r*.job.json
@@ -13,4 +14,3 @@ codex.repair.r*.result.json
 translation_report.json
 autotune_report.json
 *.zh-CN.txt
-
