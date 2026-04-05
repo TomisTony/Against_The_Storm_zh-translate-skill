@@ -1,0 +1,435 @@
+{
+  "version": 1,
+  "rules": [
+    {
+      "id": "firekeeper",
+      "source": "Firekeeper",
+      "target": "护火者",
+      "match": "exact_ci",
+      "priority": 100,
+      "scope": "global",
+      "forbid": [
+        "火夫"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "tick_tock",
+      "source": "Tick Tock",
+      "target": "争分夺秒",
+      "match": "exact_ci",
+      "priority": 100,
+      "scope": "order",
+      "forbid": [],
+      "enabled": true
+    },
+    {
+      "id": "pyromania",
+      "source": "Pyromania",
+      "target": "纵火狂",
+      "match": "exact_ci",
+      "priority": 100,
+      "scope": "order",
+      "forbid": [],
+      "enabled": true
+    },
+    {
+      "id": "cult_of_fire",
+      "source": "The Cult of Fire",
+      "target": "火之崇拜",
+      "match": "exact_ci",
+      "priority": 100,
+      "scope": "order",
+      "forbid": [],
+      "enabled": true
+    },
+    {
+      "id": "bat_villagers",
+      "source": "Bat Villagers",
+      "target": "蝙蝠村民",
+      "match": "exact_ci",
+      "priority": 100,
+      "scope": "order",
+      "forbid": [],
+      "enabled": true
+    },
+    {
+      "id": "bat_majority",
+      "source": "Bat Majority",
+      "target": "蝙蝠主导",
+      "match": "exact_ci",
+      "priority": 100,
+      "scope": "order",
+      "forbid": [],
+      "enabled": true
+    },
+    {
+      "id": "riverlands",
+      "source": "Riverlands",
+      "target": "河间地",
+      "match": "exact_ci",
+      "priority": 100,
+      "scope": "biome",
+      "forbid": [],
+      "enabled": true
+    },
+    {
+      "id": "riverland",
+      "source": "Riverland",
+      "target": "河间地",
+      "match": "exact_ci",
+      "priority": 100,
+      "scope": "biome",
+      "forbid": [
+        "Riverlands"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "mist_piercers",
+      "source": "Mist Piercers",
+      "target": "刺雾器",
+      "match": "exact_ci",
+      "priority": 100,
+      "scope": "perk",
+      "forbid": [],
+      "enabled": true
+    },
+    {
+      "id": "survey_equipment",
+      "source": "Survey Equipment",
+      "target": "勘测设备",
+      "match": "exact_ci",
+      "priority": 100,
+      "scope": "perk",
+      "forbid": [],
+      "enabled": true
+    },
+    {
+      "id": "treasure_hunt",
+      "source": "Treasure Hunt",
+      "target": "寻宝",
+      "match": "exact_ci",
+      "priority": 100,
+      "scope": "order",
+      "forbid": [],
+      "enabled": true
+    },
+    {
+      "id": "abandoned_caches",
+      "source": "Abandoned Caches",
+      "target": "废弃贮藏库",
+      "match": "exact_ci",
+      "priority": 100,
+      "scope": "objective",
+      "forbid": [
+        "废弃宝箱"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "trade_logs",
+      "source": "Trade Logs",
+      "target": "交易日志",
+      "match": "exact_ci",
+      "priority": 100,
+      "scope": "perk",
+      "forbid": [],
+      "enabled": true
+    },
+    {
+      "id": "stormforged_cornerstones",
+      "source": "Stormforged Cornerstones",
+      "target": "风暴锻造基石",
+      "match": "exact_ci",
+      "priority": 100,
+      "scope": "system",
+      "forbid": [
+        "锻风基石"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "cornerstone_forge",
+      "source": "Cornerstone Forge",
+      "target": "基石熔炉",
+      "match": "exact_ci",
+      "priority": 100,
+      "scope": "system",
+      "forbid": [
+        "基石锻造"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "silent_dominion",
+      "source": "Silent Dominion",
+      "target": "无声领域",
+      "match": "exact_ci",
+      "priority": 100,
+      "scope": "modifier",
+      "forbid": [],
+      "enabled": true
+    },
+    {
+      "id": "captains_curse_ascii",
+      "source": "Captain's Curse",
+      "target": "船长的诅咒",
+      "match": "exact_ci",
+      "priority": 100,
+      "scope": "effect",
+      "forbid": [
+        "Captain’s Curse",
+        "Captain鈥檚 Curse"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "captains_curse_curly",
+      "source": "Captain’s Curse",
+      "target": "船长的诅咒",
+      "match": "exact_ci",
+      "priority": 100,
+      "scope": "effect",
+      "forbid": [
+        "Captain's Curse",
+        "Captain鈥檚 Curse"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "captains_curse_mojibake",
+      "source": "Captain鈥檚 Curse",
+      "target": "船长的诅咒",
+      "match": "exact_ci",
+      "priority": 100,
+      "scope": "effect",
+      "forbid": [
+        "Captain's Curse",
+        "Captain’s Curse"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "brineworks",
+      "source": "Brineworks",
+      "target": "盐田",
+      "match": "exact_ci",
+      "priority": 100,
+      "scope": "building",
+      "forbid": [],
+      "enabled": true
+    },
+    {
+      "id": "plantation",
+      "source": "Plantation",
+      "target": "种植园",
+      "match": "exact_ci",
+      "priority": 100,
+      "scope": "building",
+      "forbid": [],
+      "enabled": true
+    },
+    {
+      "id": "forbidden_lands",
+      "source": "Forbidden Lands",
+      "target": "禁忌之地",
+      "match": "exact_ci",
+      "priority": 100,
+      "scope": "modifier",
+      "forbid": [],
+      "enabled": true
+    },
+    {
+      "id": "ruins",
+      "source": "Ruins",
+      "target": "遗迹",
+      "match": "exact_ci",
+      "priority": 100,
+      "scope": "modifier",
+      "forbid": [],
+      "enabled": true
+    },
+    {
+      "id": "overzaelous_architects",
+      "source": "Overzaelous Architects",
+      "target": "狂热建筑师",
+      "match": "exact_ci",
+      "priority": 100,
+      "scope": "cornerstone",
+      "forbid": [],
+      "enabled": true
+    },
+    {
+      "id": "bat_house",
+      "source": "Bat House",
+      "target": "蝙蝠屋",
+      "match": "exact_ci",
+      "priority": 100,
+      "scope": "building",
+      "forbid": [],
+      "enabled": true
+    },
+    {
+      "id": "repair_station",
+      "source": "Repair Station",
+      "target": "修理站",
+      "match": "exact_ci",
+      "priority": 100,
+      "scope": "upgrade",
+      "forbid": [],
+      "enabled": true
+    },
+    {
+      "id": "arckmage_ascii",
+      "source": "Arckmage's Challenge",
+      "target": "大法师的挑战",
+      "match": "exact_ci",
+      "priority": 100,
+      "scope": "text",
+      "forbid": [
+        "Arckmage’s Challenge",
+        "Arckmage鈥檚 Challenge"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "arckmage_curly",
+      "source": "Arckmage’s Challenge",
+      "target": "大法师的挑战",
+      "match": "exact_ci",
+      "priority": 100,
+      "scope": "text",
+      "forbid": [
+        "Arckmage's Challenge",
+        "Arckmage鈥檚 Challenge"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "arckmage_mojibake",
+      "source": "Arckmage鈥檚 Challenge",
+      "target": "大法师的挑战",
+      "match": "exact_ci",
+      "priority": 100,
+      "scope": "text",
+      "forbid": [
+        "Arckmage's Challenge",
+        "Arckmage’s Challenge"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "orders_plural",
+      "source": "Orders",
+      "target": "诏令",
+      "match": "exact_ci",
+      "priority": 98,
+      "scope": "ui",
+      "forbid": [
+        "订单"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "orders_single",
+      "source": "Order",
+      "target": "诏令",
+      "match": "exact_ci",
+      "priority": 98,
+      "scope": "ui",
+      "forbid": [
+        "订单"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "sea_marrow",
+      "source": "Sea Marrow",
+      "target": "海洋精华",
+      "match": "exact_ci",
+      "priority": 98,
+      "scope": "resource",
+      "forbid": [
+        "海髓"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "chest_chaser",
+      "source": "Chest Chaser",
+      "target": "宝箱猎人",
+      "match": "exact_ci",
+      "priority": 98,
+      "scope": "order",
+      "forbid": [],
+      "enabled": true
+    },
+    {
+      "id": "shedding_season",
+      "source": "Shedding Season",
+      "target": "蜕皮季",
+      "match": "exact_ci",
+      "priority": 98,
+      "scope": "mystery",
+      "forbid": [],
+      "enabled": true
+    },
+    {
+      "id": "forest_mystery",
+      "source": "Forest Mystery",
+      "target": "森林之谜",
+      "match": "exact_ci",
+      "priority": 98,
+      "scope": "mystery",
+      "forbid": [
+        "森林谜题"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "auto_ref_royal_guard_training_cornerstone",
+      "source": "Royal Guard Training Cornerstone",
+      "target": "皇家卫队训练",
+      "match": "exact_ci",
+      "priority": 99,
+      "scope": "auto_ref",
+      "forbid": [
+        "Royal Guard Training"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "auto_ref_gambler_world_event",
+      "source": "Gambler World Event",
+      "target": "赌徒",
+      "match": "exact_ci",
+      "priority": 99,
+      "scope": "auto_ref",
+      "forbid": [
+        "Gambler"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "auto_ref_bankrupt_trader",
+      "source": "Bankrupt Trader",
+      "target": "破产商人",
+      "match": "exact_ci",
+      "priority": 99,
+      "scope": "auto_ref",
+      "forbid": [],
+      "enabled": true
+    },
+    {
+      "id": "auto_ref_big_shelter",
+      "source": "Big Shelter",
+      "target": "大庇护所",
+      "match": "exact_ci",
+      "priority": 99,
+      "scope": "auto_ref",
+      "forbid": [],
+      "enabled": true
+    }
+  ]
+}
