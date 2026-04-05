@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -368,30 +369,169 @@ def upsert_rules(
     return existing_rules, added, updated
 
 
-def run_pipeline(args: argparse.Namespace) -> None:
-    cmd = [
-        sys.executable,
-        str(args.pipeline),
-        "--input",
-        str(args.input),
-        "--output",
-        str(args.output),
-        "--kb-dir",
-        str(args.kb_dir),
-        "--report",
-        str(args.report),
-        "--overrides",
-        str(args.overrides),
-        "--llm-backend",
-        args.llm_backend,
-        "--max-repair-rounds",
-        str(args.max_repair_rounds),
-    ]
-    if args.codex_dir:
-        cmd.extend(["--codex-dir", str(args.codex_dir)])
+def run_cmd(cmd: List[str], label: str, allow_failure: bool = False) -> Tuple[int, str, str]:
     proc = subprocess.run(cmd, capture_output=True, text=True)
-    if proc.returncode != 0:
-        raise RuntimeError(f"Pipeline failed.\nSTDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}")
+    if proc.returncode != 0 and not allow_failure:
+        raise RuntimeError(f"{label} failed.\nCMD: {' '.join(cmd)}\nSTDOUT:\n{proc.stdout}\nSTDERR:\n{proc.stderr}")
+    return proc.returncode, proc.stdout, proc.stderr
+
+
+def run_round_pipeline(
+    args: argparse.Namespace,
+    round_no: int,
+    round_work_dir: Path,
+    round_output_path: Path,
+    round_report_path: Path,
+) -> Dict[str, Any]:
+    result_path = round_work_dir / "translation.result.json"
+    validation_report_path = round_work_dir / "validation.report.json"
+    round_info: Dict[str, Any] = {
+        "round": round_no,
+        "work_dir": str(round_work_dir),
+        "output_file": str(round_output_path),
+        "report_file": str(round_report_path),
+        "status": "failed",
+        "reason": "",
+    }
+
+    run_cmd(
+        [
+            sys.executable,
+            str(args.pipeline),
+            "prepare",
+            "--input",
+            str(args.input),
+            "--output",
+            str(round_output_path),
+            "--kb-dir",
+            str(args.kb_dir),
+            "--report",
+            str(round_report_path),
+            "--overrides",
+            str(args.overrides),
+            "--work-dir",
+            str(round_work_dir),
+            "--clean-work",
+            "true",
+        ],
+        f"prepare.r{round_no}",
+    )
+
+    if not result_path.exists():
+        round_info["reason"] = f"missing_result:{result_path}"
+        return round_info
+
+    repair_round = 1
+    code, _, _ = run_cmd(
+        [
+            sys.executable,
+            str(args.pipeline),
+            "validate",
+            "--work-dir",
+            str(round_work_dir),
+            "--result",
+            str(result_path),
+            "--validation-report",
+            str(validation_report_path),
+            "--round",
+            str(repair_round),
+            "--strict-gate",
+            "true",
+        ],
+        f"validate.r{round_no}.{repair_round}",
+        allow_failure=True,
+    )
+    if code == 2:
+        round_info["reason"] = "stale_result"
+        return round_info
+
+    while code == 3:
+        if repair_round > int(args.max_repair_rounds):
+            round_info["reason"] = f"max_repair_rounds_exceeded:{args.max_repair_rounds}"
+            return round_info
+        repair_job = round_work_dir / f"repair.job.r{repair_round}.json"
+        if not repair_job.exists():
+            round_info["reason"] = f"missing_repair_job:{repair_job}"
+            return round_info
+        repair_result = round_work_dir / f"repair.result.r{repair_round}.json"
+        if not repair_result.exists():
+            round_info["reason"] = f"missing_repair_result:{repair_result}"
+            return round_info
+        run_cmd(
+            [
+                sys.executable,
+                str(args.pipeline),
+                "apply-repair",
+                "--work-dir",
+                str(round_work_dir),
+                "--result",
+                str(result_path),
+                "--repair-result",
+                str(repair_result),
+                "--round",
+                str(repair_round),
+            ],
+            f"apply-repair.r{round_no}.{repair_round}",
+        )
+        repair_round += 1
+        code, _, _ = run_cmd(
+            [
+                sys.executable,
+                str(args.pipeline),
+                "validate",
+                "--work-dir",
+                str(round_work_dir),
+                "--result",
+                str(result_path),
+                "--validation-report",
+                str(validation_report_path),
+                "--round",
+                str(repair_round),
+                "--strict-gate",
+                "true",
+            ],
+            f"validate.r{round_no}.{repair_round}",
+            allow_failure=True,
+        )
+        if code == 2:
+            round_info["reason"] = "stale_result_after_repair"
+            return round_info
+
+    if code != 0:
+        round_info["reason"] = f"validate_failed_exit_{code}"
+        return round_info
+
+    finalize_code, _, finalize_err = run_cmd(
+        [
+            sys.executable,
+            str(args.pipeline),
+            "finalize",
+            "--work-dir",
+            str(round_work_dir),
+            "--result",
+            str(result_path),
+            "--validation-report",
+            str(validation_report_path),
+            "--strict-gate",
+            "true",
+            "--output",
+            str(round_output_path),
+            "--report",
+            str(round_report_path),
+            "--round",
+            str(repair_round),
+        ],
+        f"finalize.r{round_no}",
+        allow_failure=True,
+    )
+    if finalize_code != 0:
+        round_info["reason"] = f"finalize_failed_exit_{finalize_code}:{finalize_err.strip()}"
+        return round_info
+
+    round_info["status"] = "passed"
+    round_info["reason"] = ""
+    round_info["repair_rounds"] = repair_round
+    return round_info
 
 
 def evaluate_term_misses(source_text: str, output_text: str, proposals: List[Dict[str, Any]]) -> List[Dict[str, str]]:
@@ -419,10 +559,10 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--kb-dir", default=str(script_dir / "kb"))
     p.add_argument("--overrides", default=str(script_dir / "term_overrides.json"))
     p.add_argument("--pipeline", default=str(script_dir / "translate_pipeline.py"))
-    p.add_argument("--llm-backend", choices=["codex", "api"], default="codex")
-    p.add_argument("--codex-dir", default="")
-    p.add_argument("--max-repair-rounds", type=int, default=0)
-    p.add_argument("--max-iters", type=int, default=3)
+    p.add_argument("--compare-script", default=str(script_dir / "compare_outputs.py"))
+    p.add_argument("--work-dir", default="")
+    p.add_argument("--max-repair-rounds", type=int, default=2)
+    p.add_argument("--fixed-rounds", type=int, default=5)
     p.add_argument("--kb-topk", type=int, default=8)
     p.add_argument("--min-score", type=float, default=0.12)
     p.add_argument("--min-margin", type=float, default=0.005)
@@ -439,17 +579,21 @@ def main() -> int:
     report_path = Path(args.report).resolve()
     autotune_report_path = Path(args.autotune_report).resolve()
     kb_dir = Path(args.kb_dir).resolve()
+    compare_script = Path(args.compare_script).resolve()
+    base_work_dir = Path(args.work_dir).resolve() if args.work_dir else (output_path.parent / "work")
     sqlite_path = kb_dir / "kb.sqlite"
     if not sqlite_path.exists():
         raise FileNotFoundError(f"KB not found: {sqlite_path}")
+    if not compare_script.exists():
+        raise FileNotFoundError(f"Compare script not found: {compare_script}")
 
     source_text = normalize_quotes(input_path.read_text(encoding="utf-8-sig"))
     reference_text = normalize_quotes(ref_path.read_text(encoding="utf-8-sig"))
 
     conn = sqlite3.connect(str(sqlite_path))
-    history = []
+    rounds: List[Dict[str, Any]] = []
     try:
-        for i in range(1, int(args.max_iters) + 1):
+        for i in range(1, int(args.fixed_rounds) + 1):
             t0 = time.time()
             existing_rules = load_overrides(overrides_path)
             proposals = propose_rules_from_reference(
@@ -463,34 +607,72 @@ def main() -> int:
             )
             rules, added, updated = upsert_rules(existing_rules, proposals, force_update=bool(args.force_update))
             save_overrides(overrides_path, rules)
-            run_pipeline(args)
-            out_text = output_path.read_text(encoding="utf-8-sig")
-            misses = evaluate_term_misses(source_text, out_text, proposals)
-            round_info = {
-                "iter": i,
+
+            round_work_dir = base_work_dir / f"r{i}"
+            round_output_path = output_path.with_name(f"{output_path.stem}.r{i}{output_path.suffix}")
+            round_report_path = report_path.with_name(f"{report_path.stem}.r{i}{report_path.suffix}")
+            round_info = run_round_pipeline(args, i, round_work_dir, round_output_path, round_report_path)
+
+            compare_report_path = base_work_dir / f"compare.report.r{i}.json"
+            compare_payload: Dict[str, Any] = {}
+            if round_info.get("status") == "passed":
+                run_cmd(
+                    [
+                        sys.executable,
+                        str(compare_script),
+                        "--output",
+                        str(round_output_path),
+                        "--answer",
+                        str(ref_path),
+                        "--report",
+                        str(compare_report_path),
+                        "--pipeline-report",
+                        str(round_report_path),
+                    ],
+                    f"compare.r{i}",
+                )
+                compare_payload = json.loads(compare_report_path.read_text(encoding="utf-8-sig"))
+                out_text = round_output_path.read_text(encoding="utf-8-sig")
+                misses = evaluate_term_misses(source_text, out_text, proposals)
+            else:
+                misses = []
+
+            round_info.update({
                 "proposed": len(proposals),
                 "added": added,
                 "updated": updated,
                 "misses": len(misses),
                 "sample_misses": misses[:20],
+                "compare_report": str(compare_report_path) if compare_report_path.exists() else "",
+                "compare_metrics": compare_payload,
                 "latency_ms": int((time.time() - t0) * 1000),
-            }
-            history.append(round_info)
-            # Converged if nothing to add/update, or all proposed terms are now present in output.
-            if (added + updated) == 0 or len(misses) == 0:
-                break
+            })
+            rounds.append(round_info)
     finally:
         conn.close()
 
-    pipeline_report = {}
-    if report_path.exists():
+    passed_rounds = [r for r in rounds if r.get("status") == "passed"]
+    best_round = None
+    if passed_rounds:
+        best_round = max(
+            passed_rounds,
+            key=lambda r: float(((r.get("compare_metrics") or {}).get("combined_score", 0.0))),
+        )
+        shutil.copy2(Path(best_round["output_file"]), output_path)
+        shutil.copy2(Path(best_round["report_file"]), report_path)
+
+    pipeline_report: Dict[str, Any] = {}
+    if best_round and report_path.exists():
         pipeline_report = json.loads(report_path.read_text(encoding="utf-8-sig"))
     final = {
         "input": str(input_path),
         "reference": str(ref_path),
         "output": str(output_path),
         "overrides": str(overrides_path),
-        "iterations": history,
+        "fixed_rounds": int(args.fixed_rounds),
+        "rounds": rounds,
+        "best_round": best_round.get("round") if best_round else None,
+        "best_round_score": (best_round.get("compare_metrics") or {}).get("combined_score") if best_round else None,
         "final_pipeline_metrics": {
             "term_hit": pipeline_report.get("term_hit"),
             "term_total": pipeline_report.get("term_total"),
@@ -498,9 +680,12 @@ def main() -> int:
             "placeholder_errors": pipeline_report.get("placeholder_errors"),
         },
     }
+    final["status"] = "passed" if best_round else "failed"
+    if not best_round:
+        final["failure_reason"] = "no_round_passed_strict_gate"
     autotune_report_path.write_text(json.dumps(final, ensure_ascii=False, indent=2), encoding="utf-8")
     print(f"Autotune report: {autotune_report_path}")
-    return 0
+    return 0 if best_round else 1
 
 
 if __name__ == "__main__":

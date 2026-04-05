@@ -1,43 +1,74 @@
----
+﻿---
 name: against-the-storm-translation-closedloop
-description: 全自动术语约束翻译流水线（Against the Storm）。支持长文本分块翻译、术语硬约束、占位符校验、自动修复、失败收敛，以及基于“英文原文+官方中文”的自动术语迭代。适用于 Codex/OpenClaw/CC 等代理环境。
----
+description: 妯″瀷涓诲 + 宸ュ叿鍖栨祦姘寸嚎锛圓gainst the Storm锛夈€傝剼鏈礋璐?prepare/validate/apply-repair/finalize锛屾ā鍨嬭礋璐ｇ炕璇戜笌淇缁撴灉鍥炲啓锛涙敮鎸佹湳璇‖绾︽潫銆佸崰浣嶇鏍￠獙銆佸け璐ユ敹鏁涳紝浠ュ強鍩轰簬鈥滆嫳鏂囧師鏂?瀹樻柟涓枃鈥濈殑鑷姩鏈杩唬銆傞€傜敤浜?Codex/OpenClaw/CC 绛変唬鐞嗙幆澧冦€?---
 
 # Against The Storm Translation Closed Loop
 
-## 目标
+## 鐩爣
 
-- 在无人工校对前提下，实现术语优先、可收敛、可复现的中文翻译流程。
-- 面向长文本，避免逐词查询导致的低效率。
-- 统一入口脚本，产出译文 + 报告 + 可持续演进的术语表。
+- 鍦ㄦ棤浜哄伐鏍″鍓嶆彁涓嬶紝瀹炵幇鏈浼樺厛銆佸彲鏀舵暃銆佸彲澶嶇幇鐨勪腑鏂囩炕璇戞祦绋嬨€?
+- 闈㈠悜闀挎枃鏈紝閬垮厤閫愯瘝鏌ヨ瀵艰嚧鐨勪綆鏁堢巼銆?
+- 缁熶竴鍏ュ彛鑴氭湰锛屼骇鍑鸿瘧鏂?+ 鎶ュ憡 + 鍙寔缁紨杩涚殑鏈琛ㄣ€?
 
-## 目录结构
+## 鐩綍缁撴瀯
 
-- `translate_pipeline.py`：主流水线（`ingest -> term_lock -> translate -> validate -> repair`）
-- `autotune_terms.py`：基于英文原文 + 官方中文参考自动迭代术语
-- `build_index.py`：构建本地 `kb.sqlite` 与语义索引
-- `query_kb.py`：术语检索
-- `term_overrides.json`：最高优先级术语硬规则
-- `scripts/*.ps1`：PowerShell 快捷入口
-- `references/playbook.md`：完整操作手册
+- `translate_pipeline.py`锛氬崗璁伐鍏峰叆鍙ｏ紙`prepare -> validate -> apply-repair -> finalize`锛?- `autotune_terms.py`锛氬熀浜庤嫳鏂囧師鏂?+ 瀹樻柟涓枃鍙傝€冭嚜鍔ㄨ凯浠ｆ湳璇?
+- `build_index.py`锛氭瀯寤烘湰鍦?`kb.sqlite` 涓庤涔夌储寮?
+- `query_kb.py`锛氭湳璇绱?
+- `term_overrides.json`锛氭渶楂樹紭鍏堢骇鏈纭鍒?
+- `scripts/*.ps1`锛歅owerShell 蹇嵎鍏ュ彛
+- `references/playbook.md`锛氬畬鏁存搷浣滄墜鍐?
 
-## 快速开始
+## 蹇€熷紑濮?
 
-1. 安装依赖：`scripts/setup_env.ps1`
-2. 构建 KB：`scripts/build_kb.ps1 -Input <zh-CN.txt或json>`
-3. 执行翻译：`scripts/translate.ps1 -Input <en.txt> -Output <zh.txt> -KbDir <kb目录>`
-4. 有官方译文时自动迭代：`scripts/autotune.ps1 -Input <en.txt> -Reference <official_zh.txt> -Output <zh.txt> -KbDir <kb目录>`
+1. 瀹夎渚濊禆锛歚scripts/setup_env.ps1`
+2. 鏋勫缓 KB锛歚scripts/build_kb.ps1 -Input <zh-CN.txt鎴杍son>`
+3. 鎵ц缈昏瘧锛歚scripts/translate.ps1 -Mode agent -Input <en.txt> -Output <zh.txt> -KbDir <kb鐩綍>`
+4. 鏈夊畼鏂硅瘧鏂囨椂鑷姩杩唬锛歚scripts/autotune.ps1 -Input <en.txt> -Reference <official_zh.txt> -Output <zh.txt> -KbDir <kb鐩綍>`
 
-## 关键约束
+## 鍏抽敭绾︽潫
 
-- `term_overrides.json` 优先级最高。
-- 占位符 `{0}` / `%s` / 数字默认强一致。
-- 术语无法安全确定时使用 `[[TERM_UNRESOLVED:<TERM>]]` 收敛（可追踪，不瞎猜）。
-- `codex` 后端缺少 repair 结果时不会中断，会继续完成主流程并写报告。
+- `term_overrides.json` 浼樺厛绾ф渶楂樸€?
+- 鍗犱綅绗?`{0}` / `%s` / 鏁板瓧榛樿寮轰竴鑷淬€?
+- 鏈鏃犳硶瀹夊叏纭畾鏃朵娇鐢?`[[TERM_UNRESOLVED:<TERM>]]` 鏀舵暃锛堝彲杩借釜锛屼笉鐬庣寽锛夈€?
+## 杈撳嚭鐗?
 
-## 输出物
+- 璇戞枃锛歚<output>`
+- 鎶ュ憡锛歚translation_report.json`
+- 鑷姩杩唬鎶ュ憡锛歚autotune_report.json`
 
-- 译文：`<output>`
-- 报告：`translation_report.json`
-- 自动迭代报告：`autotune_report.json`
 
+## Strict Gate Update (2026-04)
+
+- `prepare` now writes stable identity fields into `translation.job.json`:
+  - `schema_version`
+  - `job_id`
+  - `input_sha256`
+- `translation.result.json` must contain matching `schema_version/job_id/input_sha256`.
+- `validate` now writes `passed` and returns non-zero under strict gate when:
+  - identity mismatch (`stale_result`, exit 2), or
+  - `violation_count > 0` / `repair_task_count > 0` (exit 3).
+- `finalize` now requires latest `validation.report.json` with `passed=true`.
+- `finalize` strict gate checks:
+  - `term_unresolved == 0`
+  - `placeholder_errors == 0`
+  - `en_only_line_ratio <= 0.10`
+
+### New Compare Utility
+
+- Added `compare_outputs.py` and `compare.report.rN.json`.
+- Metrics:
+  - `char_similarity`
+  - `line_similarity`
+  - `term_hit_rate`
+  - `en_only_line_ratio`
+  - `unresolved_tags`
+- Combined score formula:
+  - `0.6 * char_similarity + 0.2 * line_similarity + 0.2 * term_hit_rate`
+
+### Fixed 5-Round Autotune
+
+- `autotune_terms.py` now runs fixed rounds (`--fixed-rounds`, default `5`).
+- Each round uses isolated workspace: `work/r1 ... work/r5`.
+- Only rounds passing strict gate participate in final selection.
+- Best successful round output is copied to requested `--output` and `--report`.

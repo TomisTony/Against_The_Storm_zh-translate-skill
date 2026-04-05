@@ -3,17 +3,17 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
 import html
 import json
-import os
 import re
 import sqlite3
 import sys
 import time
-import urllib.error
-import urllib.request
+import uuid
 from collections import Counter, defaultdict
 from dataclasses import dataclass
+from datetime import datetime, timezone
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any, Dict, List, Tuple
@@ -30,12 +30,16 @@ DEFAULT_PARAMS={"balanced":{
     "bootstrap_min_frequency":1,"bootstrap_max_rules":300,
     "drift_forbid_min_count":2,
 }}
+PROTOCOL_SCHEMA_VERSION = 2
+STRICT_MAX_EN_ONLY_LINE_RATIO = 0.10
 
 RE_TERM_CANDIDATE=re.compile(r"\b(?:[A-Z][A-Za-z0-9'+/\-]{2,}|[A-Z]{2,})(?:\s+(?:[A-Z][A-Za-z0-9'+/\-]{2,}|[A-Z]{2,})){0,3}\b")
 RE_PLACEHOLDER=re.compile(r"\{[^{}\n]+\}|%\d*\$?[sdif]|%[sdif]")
 RE_NUMERIC=re.compile(r"\d+(?:\.\d+)?%?")
 RE_UNRESOLVED=re.compile(r"\[\[TERM_UNRESOLVED:([^\]]+)\]\]")
 RE_CJK_TOKEN=re.compile(r"[\u4e00-\u9fff]{2,12}")
+RE_CJK_CHAR=re.compile(r"[\u4e00-\u9fff]")
+RE_EN_WORD=re.compile(r"[A-Za-z]")
 
 HIGH_VALUE_KEYWORDS={
     "bat","beaver","fox","frog","harpy","human","lizard","seal","species","race",
@@ -75,33 +79,6 @@ class HtmlTextExtractor(HTMLParser):
         merged=re.sub(r"\n\s*\n+","\n\n",merged)
         merged=re.sub(r"[ \t]+"," ",merged)
         return merged.strip()
-
-class OpenAICompatClient:
-    def __init__(self,model:str,api_key:str,base_url:str,timeout:int=120)->None:
-        self.model=model;self.api_key=api_key;self.base_url=base_url.rstrip("/");self.timeout=timeout
-    def chat_json(self,system_prompt:str,user_prompt:str)->Dict[str,Any]:
-        req=urllib.request.Request(
-            f"{self.base_url}/chat/completions",
-            data=json.dumps({
-                "model":self.model,"temperature":0,"response_format":{"type":"json_object"},
-                "messages":[{"role":"system","content":system_prompt},{"role":"user","content":user_prompt}],
-            }).encode("utf-8"),
-            headers={"Content-Type":"application/json","Authorization":f"Bearer {self.api_key}"},method="POST")
-        try:
-            with urllib.request.urlopen(req,timeout=self.timeout) as resp: body=resp.read().decode("utf-8")
-        except urllib.error.HTTPError as e:
-            detail=e.read().decode("utf-8",errors="ignore") if e.fp else ""
-            raise RuntimeError(f"LLM HTTP error {e.code}: {detail}") from e
-        except urllib.error.URLError as e:
-            raise RuntimeError(f"LLM connection error: {e}") from e
-        raw=json.loads(body);content=raw["choices"][0]["message"]["content"].strip()
-        if content.startswith("```"):
-            content=re.sub(r"^```(?:json)?\s*","",content);content=re.sub(r"\s*```$","",content)
-        try:return json.loads(content)
-        except json.JSONDecodeError:
-            m=re.search(r"\{[\s\S]*\}",content)
-            if not m: raise
-            return json.loads(m.group(0))
 
 def load_text(path:Path)->str:
     raw=path.read_text(encoding="utf-8-sig");ext=path.suffix.lower()
@@ -412,31 +389,6 @@ def build_terms_for_chunk(chunk:Chunk,rules:List[Dict[str,Any]],conn:sqlite3.Con
         else: soft.append(obj)
     return sorted(locked.values(),key=lambda x:len(x["source"]),reverse=True),soft
 
-def build_translate_prompts(batch:List[Dict[str,Any]])->Tuple[str,str]:
-    system_prompt=("You are a professional game localization translator. "
-                   "Translate source sentences to Simplified Chinese (zh-CN) with strict term compliance.")
-    user_payload={
-        "task":"Translate each item to zh-CN.",
-        "rules":[
-            "Return JSON only.",
-            "Keep placeholders exactly unchanged, such as {0}, {foo}, %s, %d.",
-            "Keep numbers and percentages unchanged.",
-            "If a source term appears in source sentence, output must use the required target term.",
-            "Never use forbidden terms.",
-            "Output format: {'items':[{'chunk_id':'...','translated_sentences':['...']}]}.",
-        ],
-        "items":batch,
-    }
-    return system_prompt,json.dumps(user_payload,ensure_ascii=False)
-
-def run_translation_batch(client:OpenAICompatClient,batch_items:List[Dict[str,Any]])->Dict[str,List[str]]:
-    sp,up=build_translate_prompts(batch_items);parsed=client.chat_json(system_prompt=sp,user_prompt=up)
-    out={}
-    for it in parsed.get("items",[]):
-        cid=str(it.get("chunk_id","")).strip();sents=[str(x).strip() for x in it.get("translated_sentences",[])]
-        if cid:out[cid]=sents
-    return out
-
 def write_json(path:Path,obj:Dict[str,Any])->None:
     path.parent.mkdir(parents=True,exist_ok=True)
     path.write_text(json.dumps(obj,ensure_ascii=False,indent=2),encoding="utf-8")
@@ -444,31 +396,43 @@ def write_json(path:Path,obj:Dict[str,Any])->None:
 def load_json(path:Path)->Dict[str,Any]:
     return json.loads(path.read_text(encoding="utf-8-sig"))
 
-def build_codex_paths(base_dir:Path)->Dict[str,Path]:
+def compute_file_sha256(path:Path)->str:
+    h=hashlib.sha256()
+    with path.open("rb") as f:
+        for chunk in iter(lambda: f.read(1024*1024), b""):
+            h.update(chunk)
+    return h.hexdigest()
+
+def build_job_id()->str:
+    return f"job_{datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%SZ')}_{uuid.uuid4().hex[:8]}"
+
+def cleanup_protocol_workspace(work_dir:Path)->None:
+    files=[
+        work_dir/"translation.result.json",
+        work_dir/"validation.report.json",
+    ]
+    for path in files:
+        if path.exists():
+            path.unlink()
+    for pat in ("repair.job.r*.json","repair.result.r*.json"):
+        for path in work_dir.glob(pat):
+            if path.is_file():
+                path.unlink()
+
+def build_protocol_paths(base_dir:Path)->Dict[str,Path]:
     return {
-        "translation_job":base_dir/"codex.translation.job.json",
-        "translation_result":base_dir/"codex.translation.result.json",
+        "translation_job":base_dir/"translation.job.json",
+        "translation_result":base_dir/"translation.result.json",
+        "validation_report":base_dir/"validation.report.json",
     }
 
-def build_codex_repair_paths(base_dir:Path,round_id:int)->Dict[str,Path]:
+def build_protocol_repair_paths(base_dir:Path,round_id:int)->Dict[str,Path]:
     return {
-        "repair_job":base_dir/f"codex.repair.r{round_id}.job.json",
-        "repair_result":base_dir/f"codex.repair.r{round_id}.result.json",
+        "repair_job":base_dir/f"repair.job.r{round_id}.json",
+        "repair_result":base_dir/f"repair.result.r{round_id}.json",
     }
 
-def load_codex_translation_result(path:Path,chunks:List[Chunk])->Dict[str,List[str]]:
-    payload=load_json(path);items=payload.get("items",[])
-    out={}
-    for it in items:
-        cid=str(it.get("chunk_id","")).strip()
-        sents=[str(x).strip() for x in it.get("translated_sentences",[])]
-        if cid: out[cid]=sents
-    for c in chunks:
-        if c.chunk_id not in out:
-            out[c.chunk_id]=list(c.source_sentences)
-    return out
-
-def load_codex_repair_result(path:Path)->List[Dict[str,Any]]:
+def load_repair_result_from_file(path:Path)->List[Dict[str,Any]]:
     payload=load_json(path)
     items=payload.get("items",[])
     out=[]
@@ -479,24 +443,6 @@ def load_codex_repair_result(path:Path)->List[Dict[str,Any]]:
             "translated":str(it.get("translated","")).strip(),
         })
     return out
-
-def build_repair_prompt(tasks:List[Dict[str,Any]])->Tuple[str,str]:
-    sp=("You repair zh-CN translated sentences for game localization. "
-        "Only fix term/placeholder/number violations; keep meaning and style concise.")
-    up={
-        "task":"Repair sentences.",
-        "rules":[
-            "Return JSON only.","Do not change placeholders.","Do not change numbers.",
-            "Use required target terms when source terms appear.",
-            "Output format: {'items':[{'chunk_id':'...','sentence_id':0,'translated':'...'}]}.",
-        ],
-        "items":tasks,
-    }
-    return sp,json.dumps(up,ensure_ascii=False)
-
-def run_repair_batch(client:OpenAICompatClient,tasks:List[Dict[str,Any]])->List[Dict[str,Any]]:
-    sp,up=build_repair_prompt(tasks);parsed=client.chat_json(system_prompt=sp,user_prompt=up)
-    return parsed.get("items",[])
 
 def extract_placeholders(text:str)->List[str]: return RE_PLACEHOLDER.findall(text)
 def extract_numbers(text:str)->List[str]: return RE_NUMERIC.findall(text)
@@ -571,13 +517,6 @@ def resolve_params(args:argparse.Namespace)->Dict[str,Any]:
     if args.placeholder_strict is not None: params["placeholder_strict"]=args.placeholder_strict
     return params
 
-def ensure_env_or_raise(args:argparse.Namespace)->OpenAICompatClient:
-    api_key=args.api_key or os.getenv("TRANSLATE_API_KEY") or os.getenv("OPENAI_API_KEY","")
-    base_url=args.api_base_url or os.getenv("TRANSLATE_API_BASE_URL") or "https://api.openai.com/v1"
-    model=args.model or os.getenv("TRANSLATE_MODEL") or "gpt-4.1-mini"
-    if not api_key: raise RuntimeError("Missing API key. Set --api-key or TRANSLATE_API_KEY / OPENAI_API_KEY.")
-    return OpenAICompatClient(model=model,api_key=api_key,base_url=base_url,timeout=args.request_timeout)
-
 def compute_metrics(chunks:List[Chunk],translated_by_chunk:Dict[str,List[str]],terms_by_chunk:Dict[str,List[Dict[str,Any]]])->Dict[str,int]:
     term_total=0;term_hit=0;placeholder_errors=0
     for chunk in chunks:
@@ -614,15 +553,373 @@ def apply_auto_promotion(overrides_path:Path,rules:List[Dict[str,Any]],term_stat
     if promoted: save_overrides(overrides_path,rules)
     return promoted
 
-def parse_args()->argparse.Namespace:
-    script_dir=Path(__file__).resolve().parent
-    p=argparse.ArgumentParser(description="Term-constrained translation pipeline")
-    p.add_argument("--input",required=True,help="Input path: .txt/.md/.html")
-    p.add_argument("--output",required=True,help="Output translated text path")
-    p.add_argument("--kb-dir",default=str(script_dir/"kb"))
-    p.add_argument("--report",default="",help="Report path (default: translation_report.json beside output)")
+def utc_now()->str:
+    return datetime.now(timezone.utc).isoformat()
+
+def prepare_job(
+    input_path:Path,
+    output_path:Path,
+    report_path:Path,
+    kb_dir:Path,
+    overrides_path:Path,
+    work_dir:Path,
+    params:Dict[str,Any],
+    bootstrap_force:bool,
+    profile:str,
+)->Dict[str,Any]:
+    sqlite_path=kb_dir/"kb.sqlite"
+    if not sqlite_path.exists():
+        raise FileNotFoundError(f"KB not found: {sqlite_path}. Build first with build_index.py / scripts/build_kb.ps1")
+    source_text=load_text(input_path)
+    chunks=build_chunks(source_text,params=params)
+    if not chunks:
+        raise RuntimeError("No translatable content found in input.")
+
+    rules=normalize_rules(load_overrides(overrides_path))
+    conn=sqlite3.connect(str(sqlite_path));cache={};terms_by_chunk={};soft_terms_by_chunk={};bootstrap_added=[]
+    try:
+        if bootstrap_force or not rules:
+            bootstrap_added=bootstrap_rules_from_kb(conn,kb_dir,rules,params,cache)
+            if bootstrap_added:
+                rules=normalize_rules(rules);save_overrides(overrides_path,rules)
+        for chunk in chunks:
+            locked,soft=build_terms_for_chunk(chunk=chunk,rules=rules,conn=conn,kb_dir=kb_dir,params=params,cache=cache)
+            terms_by_chunk[chunk.chunk_id]=locked;soft_terms_by_chunk[chunk.chunk_id]=soft
+    finally:
+        conn.close()
+
+    items=[]
+    for c in chunks:
+        items.append({
+            "chunk_id":c.chunk_id,
+            "source_text":c.text,
+            "source_sentences":c.source_sentences,
+            "locked_terms":terms_by_chunk.get(c.chunk_id,[]),
+            "soft_terms":soft_terms_by_chunk.get(c.chunk_id,[]),
+        })
+    payload={
+        "version":1,
+        "schema_version":PROTOCOL_SCHEMA_VERSION,
+        "created_at":utc_now(),
+        "job_id":build_job_id(),
+        "input_sha256":compute_file_sha256(input_path),
+        "profile":profile,
+        "params":params,
+        "input":str(input_path),
+        "output":str(output_path),
+        "report":str(report_path),
+        "kb_dir":str(kb_dir),
+        "overrides":str(overrides_path),
+        "work_dir":str(work_dir),
+        "bootstrap_added_terms":bootstrap_added,
+        "chunks":len(chunks),
+        "items":items,
+    }
+    return payload
+
+def chunks_from_job(job:Dict[str,Any])->Tuple[List[Chunk],Dict[str,List[Dict[str,Any]]],Dict[str,List[Dict[str,Any]]],Dict[str,Any]]:
+    chunks=[];terms_by_chunk={};soft_terms_by_chunk={}
+    for it in job.get("items",[]):
+        cid=str(it.get("chunk_id","")).strip()
+        if not cid:continue
+        sents=[str(x).strip() for x in it.get("source_sentences",[])]
+        text=str(it.get("source_text","")).strip()
+        if not sents:sents=split_sentences(text)
+        chunks.append(Chunk(chunk_id=cid,text=text,source_sentences=sents))
+        terms_by_chunk[cid]=[x for x in it.get("locked_terms",[]) if isinstance(x,dict)]
+        soft_terms_by_chunk[cid]=[x for x in it.get("soft_terms",[]) if isinstance(x,dict)]
+    params=dict(job.get("params",{})) or dict(DEFAULT_PARAMS["balanced"])
+    return chunks,terms_by_chunk,soft_terms_by_chunk,params
+
+def load_result_payload(path:Path)->Dict[str,Any]:
+    payload=load_json(path)
+    if not isinstance(payload,dict):
+        raise ValueError(f"Invalid result payload: {path}")
+    return payload
+
+def load_result_map_from_payload(payload:Dict[str,Any])->Dict[str,List[str]]:
+    items=payload.get("items",[]) if isinstance(payload,dict) else []
+    out={}
+    for it in items:
+        cid=str(it.get("chunk_id","")).strip()
+        if not cid:continue
+        out[cid]=[str(x).strip() for x in it.get("translated_sentences",[])]
+    return out
+
+def load_result_map(path:Path)->Dict[str,List[str]]:
+    return load_result_map_from_payload(load_result_payload(path))
+
+def build_identity_mismatch_violation(job:Dict[str,Any],result_payload:Dict[str,Any],round_id:int)->Dict[str,Any]:
+    expected=f"job_id={job.get('job_id','')};input_sha256={job.get('input_sha256','')};schema_version={job.get('schema_version',PROTOCOL_SCHEMA_VERSION)}"
+    actual=f"job_id={result_payload.get('job_id','')};input_sha256={result_payload.get('input_sha256','')};schema_version={result_payload.get('schema_version','')}"
+    return {
+        "chunk_id":"*",
+        "sentence_id":-1,
+        "type":"stale_result",
+        "source_term":"",
+        "expected":expected,
+        "actual":actual,
+        "phase":"validate",
+        "round":round_id,
+    }
+
+def is_result_identity_match(job:Dict[str,Any],result_payload:Dict[str,Any])->bool:
+    job_id=str(job.get("job_id","")).strip()
+    input_sha256=str(job.get("input_sha256","")).strip()
+    schema_version=int(job.get("schema_version",PROTOCOL_SCHEMA_VERSION))
+    return (
+        job_id
+        and input_sha256
+        and str(result_payload.get("job_id","")).strip()==job_id
+        and str(result_payload.get("input_sha256","")).strip()==input_sha256
+        and int(result_payload.get("schema_version",0))==schema_version
+    )
+
+def write_result_map(path:Path,chunks:List[Chunk],result_map:Dict[str,List[str]],job:Dict[str,Any],base_payload:Dict[str,Any]|None=None)->None:
+    items=[{"chunk_id":c.chunk_id,"translated_sentences":list(result_map.get(c.chunk_id,[]))} for c in chunks]
+    payload={
+        "version":1,
+        "schema_version":int(job.get("schema_version",PROTOCOL_SCHEMA_VERSION)),
+        "updated_at":utc_now(),
+        "job_id":str(job.get("job_id","")),
+        "input_sha256":str(job.get("input_sha256","")),
+        "items":items,
+    }
+    if base_payload:
+        # Preserve custom metadata written by the model side if present.
+        for k,v in base_payload.items():
+            if k in {"version","schema_version","updated_at","job_id","input_sha256","items"}:
+                continue
+            payload[k]=v
+    write_json(path,payload)
+
+def compute_language_metrics(chunks:List[Chunk],translated_by_chunk:Dict[str,List[str]])->Dict[str,Any]:
+    line_total=0
+    line_non_empty=0
+    en_only_lines=0
+    unresolved_tags=0
+    for chunk in chunks:
+        lines=list(translated_by_chunk.get(chunk.chunk_id,[]))
+        if len(lines)<len(chunk.source_sentences):
+            lines.extend([""]*(len(chunk.source_sentences)-len(lines)))
+        for line in lines:
+            line_total+=1
+            text=str(line or "").strip()
+            if not text:
+                continue
+            line_non_empty+=1
+            unresolved_tags+=len(RE_UNRESOLVED.findall(text))
+            if RE_EN_WORD.search(text) and not RE_CJK_CHAR.search(text):
+                en_only_lines+=1
+    ratio=float(en_only_lines/line_non_empty) if line_non_empty else 0.0
+    return {
+        "line_total":line_total,
+        "line_non_empty":line_non_empty,
+        "en_only_lines":en_only_lines,
+        "en_only_line_ratio":round(ratio,6),
+        "unresolved_tags":unresolved_tags,
+    }
+
+def add_alignment_violations(chunk:Chunk,lines:List[str]|None,violations:List[Dict[str,Any]],phase:str,round_id:int)->bool:
+    if lines is None:
+        violations.append({"chunk_id":chunk.chunk_id,"sentence_id":-1,"type":"missing_chunk_result","source_term":"","expected":str(len(chunk.source_sentences)),"actual":"missing","phase":phase,"round":round_id})
+        return True
+    if len(lines)!=len(chunk.source_sentences):
+        violations.append({"chunk_id":chunk.chunk_id,"sentence_id":-1,"type":"sentence_count_mismatch","source_term":"","expected":str(len(chunk.source_sentences)),"actual":str(len(lines)),"phase":phase,"round":round_id})
+    return False
+
+def collect_term_stats(chunks:List[Chunk],translated_by_chunk:Dict[str,List[str]],terms_by_chunk:Dict[str,List[Dict[str,Any]]])->Dict[str,Dict[str,Any]]:
+    term_stats={}
+    for chunk in chunks:
+        translated=list(translated_by_chunk.get(chunk.chunk_id,[]))
+        if len(translated)<len(chunk.source_sentences):translated.extend([""]*(len(chunk.source_sentences)-len(translated)))
+        for term in terms_by_chunk.get(chunk.chunk_id,[]):
+            if term.get("source_type")!="kb":continue
+            source=str(term.get("source","")).strip()
+            if not source:continue
+            source_lc=source.lower()
+            stats=term_stats.setdefault(source_lc,{"source":source,"target":str(term.get("target","")),"count":0,"hit":0})
+            for i,src_sent in enumerate(chunk.source_sentences):
+                if not contains_term(src_sent,source):continue
+                stats["count"]+=1;out_sent=translated[i]
+                if stats["target"] in out_sent and all((not bad) or (bad not in out_sent) for bad in term.get("forbid",[])):stats["hit"]+=1
+    return term_stats
+
+def run_prepare(args:argparse.Namespace)->int:
+    start_ts=time.time()
+    input_path=Path(args.input).resolve();output_path=Path(args.output).resolve()
+    report_path=Path(args.report).resolve() if args.report else output_path.with_name("translation_report.json").resolve()
+    work_dir=Path(args.work_dir).resolve() if args.work_dir else output_path.parent.resolve()/"work"
+    kb_dir=Path(args.kb_dir).resolve();overrides_path=Path(args.overrides).resolve()
+    params=resolve_params(args)
+    if bool(args.clean_work):
+        cleanup_protocol_workspace(work_dir)
+    payload=prepare_job(input_path,output_path,report_path,kb_dir,overrides_path,work_dir,params,args.bootstrap_force,args.profile)
+    paths=build_protocol_paths(work_dir)
+    write_json(paths["translation_job"],payload)
+    print(f"Prepared job: {paths['translation_job']}")
+    print(f"Job id: {payload.get('job_id','')}")
+    print(f"Expected result file: {paths['translation_result']}")
+    print(f"Chunks: {payload.get('chunks',0)}")
+    print(f"LatencyMs: {int((time.time()-start_ts)*1000)}")
+    return 0
+
+def run_validate(args:argparse.Namespace)->int:
+    work_dir=Path(args.work_dir).resolve();paths=build_protocol_paths(work_dir);repair_paths=build_protocol_repair_paths(work_dir,int(args.round))
+    job_path=Path(args.job).resolve() if args.job else paths["translation_job"]
+    result_path=Path(args.result).resolve() if args.result else paths["translation_result"]
+    report_path=Path(args.validation_report).resolve() if args.validation_report else paths["validation_report"]
+    repair_job_path=Path(args.repair_job).resolve() if args.repair_job else repair_paths["repair_job"]
+    repair_result_path=Path(args.repair_result).resolve() if args.repair_result else repair_paths["repair_result"]
+    if not job_path.exists(): raise FileNotFoundError(f"Job file not found: {job_path}. Run prepare first.")
+    if not result_path.exists(): raise FileNotFoundError(f"Result file not found: {result_path}. Please fill translation result first.")
+    job=load_json(job_path)
+    chunks,terms_by_chunk,_soft_terms,params=chunks_from_job(job)
+    result_payload=load_result_payload(result_path)
+    result_map=load_result_map_from_payload(result_payload)
+    violations=[];repair_tasks=[];translated_by_chunk={}
+    identity_ok=is_result_identity_match(job,result_payload)
+    if not identity_ok:
+        violations.append(build_identity_mismatch_violation(job,result_payload,int(args.round)))
+    for chunk in chunks:
+        translated_by_chunk[chunk.chunk_id]=list(result_map.get(chunk.chunk_id,[]))
+    if identity_ok:
+        for chunk in chunks:
+            got=result_map.get(chunk.chunk_id)
+            missing=add_alignment_violations(chunk,got,violations,"validate",int(args.round))
+            cur=list(got) if got is not None else []
+            translated_by_chunk[chunk.chunk_id]=list(cur)
+            if missing:
+                repair_tasks.extend([{"chunk_id":chunk.chunk_id,"sentence_id":sid,"source_sentence":src,"current_translation":"","locked_terms":[t for t in terms_by_chunk.get(chunk.chunk_id,[]) if contains_term(src,str(t.get("source","")))]} for sid,src in enumerate(chunk.source_sentences)])
+                continue
+            chunk_violations=validate_chunk(chunk,cur,terms_by_chunk.get(chunk.chunk_id,[]),params,"validate",int(args.round));violations.extend(chunk_violations)
+            repair_tasks.extend(group_repair_tasks(chunk,cur,terms_by_chunk.get(chunk.chunk_id,[]),chunk_violations))
+    metrics=compute_metrics(chunks,translated_by_chunk,terms_by_chunk)
+    language_metrics=compute_language_metrics(chunks,translated_by_chunk)
+    strict_gate=bool(args.strict_gate)
+    passed=identity_ok and len(violations)==0 and len(repair_tasks)==0
+    report_payload={"version":1,"schema_version":PROTOCOL_SCHEMA_VERSION,"created_at":utc_now(),"round":int(args.round),"strict_gate":strict_gate,"identity_match":identity_ok,"passed":passed,"job_file":str(job_path),"result_file":str(result_path),"repair_job_file":str(repair_job_path),"repair_result_file":str(repair_result_path),"metrics":metrics,"language_metrics":language_metrics,"violation_count":len(violations),"repair_task_count":len(repair_tasks),"violations":violations,"repair_tasks":repair_tasks}
+    write_json(report_path,report_payload)
+    if repair_tasks and identity_ok:
+        write_json(repair_job_path,{"version":1,"created_at":utc_now(),"round":int(args.round),"task":"Repair only listed sentences. Keep placeholders and numbers unchanged, satisfy locked_terms.","format":{"items":[{"chunk_id":"c_0001","sentence_id":0,"translated":"..."}]},"expected_result_file":str(repair_result_path),"items":repair_tasks})
+    elif repair_job_path.exists():
+        repair_job_path.unlink()
+    print(f"Validation report: {report_path}")
+    print(f"Passed: {passed}")
+    print(f"Violations: {len(violations)}")
+    print(f"Repair tasks: {len(repair_tasks)}")
+    if repair_tasks:
+        print(f"Repair job: {repair_job_path}")
+        print(f"Expected repair result: {repair_result_path}")
+    if not identity_ok:
+        return 2
+    if strict_gate and not passed:
+        return 3
+    return 0
+
+def run_apply_repair(args:argparse.Namespace)->int:
+    work_dir=Path(args.work_dir).resolve();paths=build_protocol_paths(work_dir);repair_paths=build_protocol_repair_paths(work_dir,int(args.round))
+    job_path=Path(args.job).resolve() if args.job else paths["translation_job"]
+    result_path=Path(args.result).resolve() if args.result else paths["translation_result"]
+    repair_result_path=Path(args.repair_result).resolve() if args.repair_result else repair_paths["repair_result"]
+    if not job_path.exists(): raise FileNotFoundError(f"Job file not found: {job_path}")
+    if not result_path.exists(): raise FileNotFoundError(f"Result file not found: {result_path}")
+    if not repair_result_path.exists(): raise FileNotFoundError(f"Repair result not found: {repair_result_path}")
+    job=load_json(job_path);chunks,_,_,_=chunks_from_job(job)
+    result_payload=load_result_payload(result_path)
+    if not is_result_identity_match(job,result_payload):
+        raise RuntimeError("Result file identity mismatch. Please regenerate translation.result.json from current translation.job.json.")
+    result_map=load_result_map_from_payload(result_payload);repairs=load_repair_result_from_file(repair_result_path)
+    chunk_len={c.chunk_id:len(c.source_sentences) for c in chunks};applied=0;skipped=0
+    for fix in repairs:
+        cid=str(fix.get("chunk_id","")).strip();sid=int(fix.get("sentence_id",-1));txt=str(fix.get("translated","")).strip()
+        if not cid or sid<0 or not txt: skipped+=1;continue
+        cur=result_map.setdefault(cid,[]);exp=chunk_len.get(cid,0)
+        if exp and len(cur)<exp: cur.extend([""]*(exp-len(cur)))
+        if sid>=len(cur): skipped+=1;continue
+        cur[sid]=txt;applied+=1
+    write_result_map(result_path,chunks,result_map,job=job,base_payload=result_payload)
+    print(f"Applied repairs: {applied}")
+    print(f"Skipped repairs: {skipped}")
+    print(f"Updated result: {result_path}")
+    return 0
+
+def run_finalize(args:argparse.Namespace)->int:
+    start_ts=time.time()
+    work_dir=Path(args.work_dir).resolve();paths=build_protocol_paths(work_dir)
+    job_path=Path(args.job).resolve() if args.job else paths["translation_job"]
+    result_path=Path(args.result).resolve() if args.result else paths["translation_result"]
+    validation_report_path=Path(args.validation_report).resolve() if args.validation_report else paths["validation_report"]
+    if not job_path.exists(): raise FileNotFoundError(f"Job file not found: {job_path}")
+    if not result_path.exists(): raise FileNotFoundError(f"Result file not found: {result_path}")
+    strict_gate=bool(args.strict_gate)
+    if strict_gate:
+        if not validation_report_path.exists():
+            raise RuntimeError(f"Validation report not found: {validation_report_path}. Run validate first.")
+        validation_payload=load_json(validation_report_path)
+        if not bool(validation_payload.get("passed",False)):
+            raise RuntimeError("Finalize blocked: latest validate did not pass.")
+        if str(validation_payload.get("job_file",""))!=str(job_path) or str(validation_payload.get("result_file",""))!=str(result_path):
+            raise RuntimeError("Finalize blocked: validate report does not match current job/result.")
+    job=load_json(job_path)
+    chunks,terms_by_chunk,soft_terms_by_chunk,params=chunks_from_job(job)
+    result_payload=load_result_payload(result_path)
+    if not is_result_identity_match(job,result_payload):
+        raise RuntimeError("Result file identity mismatch. Please regenerate translation.result.json from current translation.job.json.")
+    result_map=load_result_map_from_payload(result_payload)
+    output_path=Path(args.output).resolve() if args.output else Path(str(job.get("output",""))).resolve()
+    report_path=Path(args.report).resolve() if args.report else Path(str(job.get("report",""))).resolve()
+    overrides_path=Path(str(job.get("overrides",""))).resolve()
+    violations=[];translated_by_chunk={}
+    for chunk in chunks:
+        got=result_map.get(chunk.chunk_id);missing=add_alignment_violations(chunk,got,violations,"finalize",int(args.round))
+        cur=list(got) if got is not None else []
+        if missing: cur=[""]*len(chunk.source_sentences)
+        unresolved=apply_unresolved_policy(chunk,cur,terms_by_chunk.get(chunk.chunk_id,[]),str(params.get("unresolved_policy","keep_en_with_tag")))
+        if unresolved:
+            violations.append({"chunk_id":chunk.chunk_id,"sentence_id":-1,"type":"term_unresolved_applied","source_term":"","expected":"","actual":str(unresolved),"phase":"finalize","round":int(args.round)})
+        violations.extend(validate_chunk(chunk,cur,terms_by_chunk.get(chunk.chunk_id,[]),params,"final",int(args.round)))
+        translated_by_chunk[chunk.chunk_id]=cur
+    metrics=compute_metrics(chunks,translated_by_chunk,terms_by_chunk)
+    language_metrics=compute_language_metrics(chunks,translated_by_chunk)
+    gate_failures=[]
+    if metrics.get("term_unresolved",0)>0:
+        gate_failures.append(f"term_unresolved={metrics.get('term_unresolved',0)}")
+    if metrics.get("placeholder_errors",0)>0:
+        gate_failures.append(f"placeholder_errors={metrics.get('placeholder_errors',0)}")
+    if float(language_metrics.get("en_only_line_ratio",0.0))>float(args.max_en_only_line_ratio):
+        gate_failures.append(f"en_only_line_ratio={language_metrics.get('en_only_line_ratio',0.0)}>{args.max_en_only_line_ratio}")
+    hard_violation_count=len([v for v in violations if v.get("type")!="term_unresolved_applied"])
+    if hard_violation_count>0:
+        gate_failures.append(f"hard_violations={hard_violation_count}")
+    passed=len(gate_failures)==0
+    promoted=[];drift_forbid_added=[]
+    if passed and overrides_path.exists():
+        rules=normalize_rules(load_overrides(overrides_path))
+        term_stats=collect_term_stats(chunks,translated_by_chunk,terms_by_chunk)
+        promoted=apply_auto_promotion(overrides_path,rules,term_stats,params)
+        drift_path=get_drift_history_path(overrides_path);drift_history=load_drift_history(drift_path)
+        update_drift_history(drift_history,violations)
+        added=merge_drift_forbid_into_rules(rules,drift_history,int(params.get("drift_forbid_min_count",2)))
+        save_drift_history(drift_path,drift_history)
+        if added: rules=normalize_rules(rules);save_overrides(overrides_path,rules)
+        drift_forbid_added=[{"source":s,"alias":a} for s,a in added]
+    runtime_terms={cid:{"locked_terms":terms_by_chunk.get(cid,[]),"soft_terms":soft_terms_by_chunk.get(cid,[])} for cid in [c.chunk_id for c in chunks]}
+    report={"version":1,"schema_version":PROTOCOL_SCHEMA_VERSION,"created_at":utc_now(),"profile":job.get("profile","balanced"),"strict_gate":strict_gate,"passed":passed,"gate_failures":gate_failures,"validation_report_file":str(validation_report_path),"params":params,"input":str(job.get("input","")),"output":str(output_path),"kb_dir":str(job.get("kb_dir","")),"overrides":str(overrides_path),"work_dir":str(work_dir),"chunks":len(chunks),"latency_ms":int((time.time()-start_ts)*1000),"repair_rounds":int(args.round),"promoted_terms":promoted,"drift_forbid_added":drift_forbid_added,**metrics,"language_metrics":language_metrics,"runtime_terms":runtime_terms,"violations":violations}
+    report_path.parent.mkdir(parents=True,exist_ok=True);report_path.write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding="utf-8")
+    if strict_gate and not passed:
+        print(f"Report: {report_path}")
+        print(f"Finalize blocked by strict gate: {'; '.join(gate_failures)}")
+        return 4
+    final_text="\n\n".join([merge_chunk_text(translated_by_chunk[c.chunk_id]) for c in chunks if merge_chunk_text(translated_by_chunk[c.chunk_id]).strip()]).strip()+"\n"
+    output_path.parent.mkdir(parents=True,exist_ok=True);output_path.write_text(final_text,encoding="utf-8")
+    print(f"Output: {output_path}")
+    print(f"Report: {report_path}")
+    print(f"Metrics: term_hit={report['term_hit']}/{report['term_total']} term_unresolved={report['term_unresolved']} placeholder_errors={report['placeholder_errors']}")
+    return 0
+
+def add_prepare_args(p:argparse.ArgumentParser)->None:
     p.add_argument("--profile",default="balanced")
-    p.add_argument("--overrides",default=str(script_dir/"term_overrides.json"))
     p.add_argument("--chunk-chars",type=int);p.add_argument("--chunk-chars-min",type=int);p.add_argument("--chunk-chars-max",type=int)
     p.add_argument("--batch-chunks",type=int);p.add_argument("--kb-topk",type=int);p.add_argument("--lock-score-threshold",type=float)
     p.add_argument("--lock-margin-threshold",type=float);p.add_argument("--max-repair-rounds",type=int)
@@ -634,152 +931,42 @@ def parse_args()->argparse.Namespace:
     p.add_argument("--bootstrap-min-frequency",type=int)
     p.add_argument("--bootstrap-max-rules",type=int)
     p.add_argument("--drift-forbid-min-count",type=int)
-    p.add_argument("--api-base-url",default="");p.add_argument("--api-key",default="");p.add_argument("--model",default="")
-    p.add_argument("--request-timeout",type=int,default=120)
-    p.add_argument("--llm-backend",choices=["codex","api"],default="codex")
-    p.add_argument("--codex-dir",default="",help="Job/result directory for codex backend (default: output dir)")
-    p.add_argument("--dry-run",action="store_true",help="Skip model calls and echo source sentences")
+    p.add_argument("--clean-work",type=bool_flag,default=True)
+
+def parse_args()->argparse.Namespace:
+    script_dir=Path(__file__).resolve().parent
+    p=argparse.ArgumentParser(description="Model-orchestrated translation utility pipeline")
+    sub=p.add_subparsers(dest="command",required=True)
+    sp=sub.add_parser("prepare",help="Build translation job with chunks and locked terms")
+    sp.add_argument("--input",required=True);sp.add_argument("--output",required=True)
+    sp.add_argument("--kb-dir",default=str(script_dir/"kb"))
+    sp.add_argument("--report",default="")
+    sp.add_argument("--overrides",default=str(script_dir/"term_overrides.json"))
+    sp.add_argument("--work-dir",default="")
+    add_prepare_args(sp)
+    sv=sub.add_parser("validate",help="Validate translation result and emit repair tasks")
+    sv.add_argument("--work-dir",required=True);sv.add_argument("--job",default="");sv.add_argument("--result",default="")
+    sv.add_argument("--validation-report",default="");sv.add_argument("--repair-job",default="");sv.add_argument("--repair-result",default="")
+    sv.add_argument("--round",type=int,default=1)
+    sv.add_argument("--strict-gate",type=bool_flag,default=True)
+    sa=sub.add_parser("apply-repair",help="Apply repair.result.rN.json into translation.result.json")
+    sa.add_argument("--work-dir",required=True);sa.add_argument("--job",default="");sa.add_argument("--result",default="");sa.add_argument("--repair-result",default="")
+    sa.add_argument("--round",type=int,default=1)
+    sf=sub.add_parser("finalize",help="Finalize output and translation report")
+    sf.add_argument("--work-dir",required=True);sf.add_argument("--job",default="");sf.add_argument("--result",default="")
+    sf.add_argument("--output",default="");sf.add_argument("--report",default="");sf.add_argument("--round",type=int,default=1)
+    sf.add_argument("--validation-report",default="")
+    sf.add_argument("--strict-gate",type=bool_flag,default=True)
+    sf.add_argument("--max-en-only-line-ratio",type=float,default=STRICT_MAX_EN_ONLY_LINE_RATIO)
     return p.parse_args()
 
 def main()->int:
-    args=parse_args();params=resolve_params(args);start_ts=time.time()
-    input_path=Path(args.input).resolve();output_path=Path(args.output).resolve()
-    report_path=Path(args.report).resolve() if args.report else output_path.with_name("translation_report.json").resolve()
-    codex_base_dir=Path(args.codex_dir).resolve() if args.codex_dir else output_path.parent.resolve()
-    codex_paths=build_codex_paths(codex_base_dir)
-    kb_dir=Path(args.kb_dir).resolve();overrides_path=Path(args.overrides).resolve();sqlite_path=kb_dir/"kb.sqlite"
-    if not sqlite_path.exists():
-        raise FileNotFoundError(f"KB not found: {sqlite_path}. Build first with build_index.py / scripts/build_kb.ps1")
-    source_text=load_text(input_path);chunks=build_chunks(source_text,params=params)
-    if not chunks: raise RuntimeError("No translatable content found in input.")
-    rules=normalize_rules(load_overrides(overrides_path))
-
-    conn=sqlite3.connect(str(sqlite_path));cache={};terms_by_chunk={};soft_terms_by_chunk={};bootstrap_added=[]
-    try:
-        if args.bootstrap_force or not rules:
-            bootstrap_added=bootstrap_rules_from_kb(conn,kb_dir,rules,params,cache)
-            if bootstrap_added:
-                rules=normalize_rules(rules)
-                save_overrides(overrides_path,rules)
-        for chunk in chunks:
-            locked,soft=build_terms_for_chunk(chunk=chunk,rules=rules,conn=conn,kb_dir=kb_dir,params=params,cache=cache)
-            terms_by_chunk[chunk.chunk_id]=locked;soft_terms_by_chunk[chunk.chunk_id]=soft
-    finally:
-        conn.close()
-
-    translated_by_chunk={}
-    if args.dry_run:
-        for chunk in chunks: translated_by_chunk[chunk.chunk_id]=list(chunk.source_sentences)
-    else:
-        if args.llm_backend=="api":
-            client=ensure_env_or_raise(args);batch_size=max(1,int(params["batch_chunks"]))
-            for i in range(0,len(chunks),batch_size):
-                batch=chunks[i:i+batch_size]
-                req_items=[{"chunk_id":c.chunk_id,"source_sentences":c.source_sentences,"locked_terms":terms_by_chunk.get(c.chunk_id,[]),"soft_terms":soft_terms_by_chunk.get(c.chunk_id,[])} for c in batch]
-                ret=run_translation_batch(client=client,batch_items=req_items)
-                for c in batch:
-                    got=ret.get(c.chunk_id)
-                    translated_by_chunk[c.chunk_id]=got if got else list(c.source_sentences)
-        else:
-            req_items=[{"chunk_id":c.chunk_id,"source_sentences":c.source_sentences,"locked_terms":terms_by_chunk.get(c.chunk_id,[]),"soft_terms":soft_terms_by_chunk.get(c.chunk_id,[])} for c in chunks]
-            if not codex_paths["translation_result"].exists():
-                write_json(codex_paths["translation_job"],{
-                    "task":"Translate each source sentence to zh-CN using locked_terms as hard constraints.",
-                    "format":{"items":[{"chunk_id":"c_0001","translated_sentences":["..."]}]},
-                    "items":req_items,
-                })
-                raise RuntimeError(
-                    f"Codex translation job written: {codex_paths['translation_job']}. "
-                    f"Please create result file: {codex_paths['translation_result']} and rerun."
-                )
-            translated_by_chunk=load_codex_translation_result(codex_paths["translation_result"],chunks)
-
-    violation_history=[];repair_rounds_used=0;term_replacements=0
-    if args.dry_run or args.llm_backend!="api":
-        client=None
-    else:
-        client=ensure_env_or_raise(args)
-    for chunk in chunks:
-        cur=translated_by_chunk.get(chunk.chunk_id,list(chunk.source_sentences));locked_terms=terms_by_chunk.get(chunk.chunk_id,[])
-        cur,rep=enforce_locked_terms(chunk,cur,locked_terms);term_replacements+=rep
-        v0=validate_chunk(chunk,cur,locked_terms,params,"initial",0);violation_history.extend(v0)
-        for r in range(1,int(params["max_repair_rounds"])+1):
-            reparable=validate_chunk(chunk,cur,locked_terms,params,"repair_check",r)
-            if not reparable: break
-            violation_history.extend(reparable)
-            if args.dry_run: break
-            tasks=group_repair_tasks(chunk,cur,locked_terms,reparable)
-            if not tasks: break
-            if args.llm_backend=="api":
-                fixes=run_repair_batch(client,tasks)
-            else:
-                repair_paths=build_codex_repair_paths(codex_base_dir,r)
-                if not repair_paths["repair_result"].exists():
-                    write_json(repair_paths["repair_job"],{
-                        "task":"Repair only these translated sentences. Keep placeholders/numbers unchanged and satisfy locked_terms.",
-                        "format":{"items":[{"chunk_id":"c_0001","sentence_id":0,"translated":"..."}]},
-                        "items":tasks,
-                    })
-                    violation_history.append({
-                        "chunk_id":chunk.chunk_id,
-                        "sentence_id":-1,
-                        "type":"repair_skipped_missing_result",
-                        "source_term":"",
-                        "expected":str(repair_paths["repair_result"]),
-                        "actual":"",
-                        "phase":"repair",
-                        "round":r,
-                    })
-                    break
-                fixes=load_codex_repair_result(repair_paths["repair_result"])
-            fix_map={}
-            for f in fixes:
-                sid=int(f.get("sentence_id",-1));txt=str(f.get("translated","")).strip()
-                if sid>=0 and txt: fix_map[sid]=txt
-            if not fix_map: break
-            for sid,txt in fix_map.items():
-                if sid<len(cur): cur[sid]=txt
-            cur,rep=enforce_locked_terms(chunk,cur,locked_terms);term_replacements+=rep
-            repair_rounds_used=max(repair_rounds_used,r)
-
-        cur,rep=enforce_locked_terms(chunk,cur,locked_terms);term_replacements+=rep
-        unresolved=apply_unresolved_policy(chunk,cur,locked_terms,str(params["unresolved_policy"]))
-        if unresolved:
-            violation_history.append({"chunk_id":chunk.chunk_id,"sentence_id":-1,"type":"term_unresolved_applied","source_term":"","expected":"","actual":str(unresolved),"phase":"finalize","round":repair_rounds_used})
-
-        final_v=validate_chunk(chunk,cur,locked_terms,params,"final",repair_rounds_used);violation_history.extend(final_v)
-        translated_by_chunk[chunk.chunk_id]=cur
-
-    term_stats={}
-    for chunk in chunks:
-        locked_terms=terms_by_chunk.get(chunk.chunk_id,[]);translated=translated_by_chunk.get(chunk.chunk_id,[])
-        if len(translated)<len(chunk.source_sentences): translated=translated+[""]*(len(chunk.source_sentences)-len(translated))
-        for term in locked_terms:
-            if term.get("source_type")!="kb": continue
-            source_lc=term["source"].lower();stats=term_stats.setdefault(source_lc,{"source":term["source"],"target":term["target"],"count":0,"hit":0})
-            for i,src_sent in enumerate(chunk.source_sentences):
-                if not contains_term(src_sent,term["source"]): continue
-                stats["count"]+=1;out_sent=translated[i]
-                if term["target"] in out_sent and all((not bad) or (bad not in out_sent) for bad in term.get("forbid",[])): stats["hit"]+=1
-
-    promoted=apply_auto_promotion(overrides_path,rules,term_stats,params)
-    drift_path=get_drift_history_path(overrides_path)
-    drift_history=load_drift_history(drift_path)
-    update_drift_history(drift_history,violation_history)
-    drift_forbid_added=merge_drift_forbid_into_rules(rules,drift_history,int(params["drift_forbid_min_count"]))
-    save_drift_history(drift_path,drift_history)
-    if drift_forbid_added:
-        rules=normalize_rules(rules)
-        save_overrides(overrides_path,rules)
-    final_text="\n\n".join([merge_chunk_text(translated_by_chunk[c.chunk_id]) for c in chunks if merge_chunk_text(translated_by_chunk[c.chunk_id]).strip()]).strip()+"\n"
-    output_path.parent.mkdir(parents=True,exist_ok=True);output_path.write_text(final_text,encoding="utf-8")
-    metrics=compute_metrics(chunks,translated_by_chunk,terms_by_chunk)
-    runtime_terms={cid:{"locked_terms":terms_by_chunk.get(cid,[]),"soft_terms":soft_terms_by_chunk.get(cid,[])} for cid in [c.chunk_id for c in chunks]}
-    report={"profile":args.profile,"params":params,"input":str(input_path),"output":str(output_path),"kb_dir":str(kb_dir),"overrides":str(overrides_path),"chunks":len(chunks),"latency_ms":int((time.time()-start_ts)*1000),"repair_rounds":repair_rounds_used,"bootstrap_added_terms":bootstrap_added,"promoted_terms":promoted,"drift_forbid_added":[{"source":s,"alias":a} for s,a in drift_forbid_added],"term_replacements":term_replacements,**metrics,"runtime_terms":runtime_terms,"violations":violation_history}
-    report_path.parent.mkdir(parents=True,exist_ok=True);report_path.write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding="utf-8")
-    print(f"Output: {output_path}");print(f"Report: {report_path}")
-    print(f"Metrics: term_hit={report['term_hit']}/{report['term_total']} term_unresolved={report['term_unresolved']} placeholder_errors={report['placeholder_errors']}")
-    return 0
+    args=parse_args()
+    if args.command=="prepare": return run_prepare(args)
+    if args.command=="validate": return run_validate(args)
+    if args.command=="apply-repair": return run_apply_repair(args)
+    if args.command=="finalize": return run_finalize(args)
+    raise RuntimeError(f"Unknown command: {args.command}")
 
 if __name__=="__main__":
     try: raise SystemExit(main())

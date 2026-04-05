@@ -1,15 +1,15 @@
-__pycache__/
+﻿__pycache__/
 *.pyc
 *.pyo
 *.pyd
 
 # runtime outputs
+tmp/
+test/
 kb/
 kb_full/
-codex.translation.job.json
-codex.translation.result.json
-codex.repair.r*.job.json
-codex.repair.r*.result.json
-translation_report.json
-autotune_report.json
-*.zh-CN.txt
+
+# local-only secrets
+.env
+.env.*
+.env/

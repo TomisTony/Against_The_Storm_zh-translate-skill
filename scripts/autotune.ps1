@@ -9,11 +9,9 @@ param(
   [string]$KbDir = "",
   [string]$Report = "",
   [string]$AutotuneReport = "",
-  [ValidateSet("codex","api")]
-  [string]$Backend = "codex",
-  [string]$CodexDir = "",
-  [int]$MaxIters = 3,
-  [int]$MaxRepairRounds = 0,
+  [string]$WorkDir = "",
+  [int]$FixedRounds = 5,
+  [int]$MaxRepairRounds = 2,
   [string]$Python = "python"
 )
 
@@ -21,6 +19,7 @@ $ErrorActionPreference = "Stop"
 $Root = Split-Path -Parent $PSScriptRoot
 $Script = Join-Path $Root "autotune_terms.py"
 $Pipeline = Join-Path $Root "translate_pipeline.py"
+$CompareScript = Join-Path $Root "compare_outputs.py"
 $Overrides = Join-Path $Root "term_overrides.json"
 if (-not $KbDir) { $KbDir = Join-Path $Root "kb" }
 if (-not $Report) {
@@ -33,6 +32,11 @@ if (-not $AutotuneReport) {
   if (-not $OutDir) { $OutDir = "." }
   $AutotuneReport = Join-Path $OutDir "autotune_report.json"
 }
+if (-not $WorkDir) {
+  $OutDir = Split-Path -Parent $Output
+  if (-not $OutDir) { $OutDir = "." }
+  $WorkDir = Join-Path $OutDir "work"
+}
 
 $args = @(
   $Script,
@@ -44,12 +48,13 @@ $args = @(
   "--autotune-report", $AutotuneReport,
   "--overrides", $Overrides,
   "--pipeline", $Pipeline,
-  "--llm-backend", $Backend,
-  "--max-iters", "$MaxIters",
+  "--compare-script", $CompareScript,
+  "--work-dir", $WorkDir,
+  "--fixed-rounds", "$FixedRounds",
   "--max-repair-rounds", "$MaxRepairRounds"
 )
-if ($CodexDir) {
-  $args += @("--codex-dir", $CodexDir)
-}
 
 & $Python @args
+if ($LASTEXITCODE -ne 0) {
+  throw "autotune_terms.py failed with exit code $LASTEXITCODE"
+}
