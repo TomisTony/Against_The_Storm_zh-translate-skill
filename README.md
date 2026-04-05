@@ -1,65 +1,67 @@
-﻿# Against The Storm zh-translate Skill
+# Against The Storm zh-translate Skill
 
-妯″瀷涓诲 + 鏈绾︽潫鐨勭炕璇?Skill锛岀敤浜?Against the Storm 鐩稿叧缃戦〉銆佽ˉ涓佽鏄庛€侀暱鏂囨湰缈昏瘧銆?
-## 鐗规€?
-- 妯″瀷涓诲缂栨帓锛氳剼鏈彧璐熻矗 `prepare/validate/apply-repair/finalize` 宸ュ叿娴佺▼
-- 鏈纭害鏉燂細`term_overrides.json` 鏈€楂樹紭鍏堢骇
-- 鍗犱綅绗?鏁板瓧涓€鑷存€ф牎楠?- 澶辫触鍙敹鏁涳細`[[TERM_UNRESOLVED:<TERM>]]`
-- 鑷姩鏈杩唬锛氬熀浜庤嫳鏂囧師鏂?+ 瀹樻柟涓枃鍙傝€冭ˉ鍏呮湳璇?- 鍗忚鏂囦欢缁熶竴锛歚translation.job.json / translation.result.json / validation.report.json / repair.result.rN.json`
+模型主导翻译 Skill。脚本只负责协议化工具流程：
 
-## 鐩綍
+- `prepare`
+- `validate`
+- `apply-repair`
+- `finalize`
 
-- `SKILL.md`: Skill 鍏ュ彛璇存槑
-- `references/playbook.md`: 鎿嶄綔鎵嬪唽
-- `scripts/*.ps1`: 蹇嵎鎵ц鑴氭湰
-- `translate_pipeline.py`: 涓荤炕璇戞祦姘寸嚎
-- `autotune_terms.py`: 鑷姩杩唬鑴氭湰
+## 核心特性
 
+- 术语约束：`term_overrides.json` + `locked_terms`
+- 一致性校验：占位符、数字、identity
+- 严格闸门：防止带病产出
+- 快速出稿：one-shot 模式可一轮出草稿
 
-## 蹇€熻繍琛岋紙妯″瀷涓诲锛?
+## 快速开始
+
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\setup_env.ps1
-powershell -ExecutionPolicy Bypass -File .\scripts\translate.ps1 -Mode agent -Source .\input.txt -Output .\output.zh-CN.txt -KbDir .\kb
+.\scripts\translate.ps1 -Mode agent -Source .\test\test.txt -Output .\test\output.fast.txt -KbDir .\kb -Profile fast
 ```
 
-娴佺▼璇存槑锛?
-1. 鑴氭湰浼氬厛鐢熸垚 `work/translation.job.json`銆? 
-2. 鐢辨ā鍨嬭鍙?job 骞跺啓鍏?`work/translation.result.json`銆? 
-3. 鑴氭湰鎵ц `validate`锛岃嫢鏈変慨澶嶄换鍔′細鐢熸垚 `repair.job.rN.json`銆? 
-4. 鐢辨ā鍨嬪啓鍏?`repair.result.rN.json`锛岃剼鏈?`apply-repair` 鍚庣户缁獙璇併€? 
-5. 鏈€缁?`finalize` 杈撳嚭璇戞枃鍜?`translation_report.json`銆? 
+## 两种运行模式
 
-## Strict Gate Update (2026-04)
+### 1) 快速出稿（默认）
 
-- `prepare` now writes stable identity fields into `translation.job.json`:
-  - `schema_version`
-  - `job_id`
-  - `input_sha256`
-- `translation.result.json` must contain matching `schema_version/job_id/input_sha256`.
-- `validate` now writes `passed` and returns non-zero under strict gate when:
-  - identity mismatch (`stale_result`, exit 2), or
-  - `violation_count > 0` / `repair_task_count > 0` (exit 3).
-- `finalize` now requires latest `validation.report.json` with `passed=true`.
-- `finalize` strict gate checks:
+```powershell
+.\scripts\translate.ps1 -Mode agent -Source .\test\test.txt -Output .\test\output.fast.txt -Profile fast
+```
+
+- 默认 `-OneShot $true`
+- 默认 `-ReuseWork $true`
+- 目标：低时延快速产出
+
+### 2) 严格终稿
+
+```powershell
+.\scripts\translate.ps1 -Mode agent -Source .\test\test.txt -Output .\test\output.strict.txt -Profile balanced -OneShot $false
+```
+
+- 启用多轮 repair，直到严格通过
+- 目标：发布级质量
+
+## 协议文件
+
+- `translation.job.json`
+- `translation.result.json`
+- `validation.report.json`
+- `repair.job.rN.json`
+- `repair.result.rN.json`
+
+## 严格闸门（strict）
+
+- `validate` 失败会返回非 0
+- `finalize --strict-gate true` 要求：
   - `term_unresolved == 0`
   - `placeholder_errors == 0`
   - `en_only_line_ratio <= 0.10`
 
-### New Compare Utility
+## 评估对比
 
-- Added `compare_outputs.py` and `compare.report.rN.json`.
-- Metrics:
-  - `char_similarity`
-  - `line_similarity`
-  - `term_hit_rate`
-  - `en_only_line_ratio`
-  - `unresolved_tags`
-- Combined score formula:
-  - `0.6 * char_similarity + 0.2 * line_similarity + 0.2 * term_hit_rate`
+使用 `compare_outputs.py` 生成对比报告：
 
-### Fixed 5-Round Autotune
-
-- `autotune_terms.py` now runs fixed rounds (`--fixed-rounds`, default `5`).
-- Each round uses isolated workspace: `work/r1 ... work/r5`.
-- Only rounds passing strict gate participate in final selection.
-- Best successful round output is copied to requested `--output` and `--report`.
+```powershell
+python .\compare_outputs.py --output .\test\output.fast.txt --answer .\test\answer.txt --report .\test\compare.report.json --pipeline-report .\test\translation_report.json
+```

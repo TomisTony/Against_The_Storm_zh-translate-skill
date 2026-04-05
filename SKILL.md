@@ -1,74 +1,74 @@
-﻿---
+---
 name: against-the-storm-translation-closedloop
-description: 妯″瀷涓诲 + 宸ュ叿鍖栨祦姘寸嚎锛圓gainst the Storm锛夈€傝剼鏈礋璐?prepare/validate/apply-repair/finalize锛屾ā鍨嬭礋璐ｇ炕璇戜笌淇缁撴灉鍥炲啓锛涙敮鎸佹湳璇‖绾︽潫銆佸崰浣嶇鏍￠獙銆佸け璐ユ敹鏁涳紝浠ュ強鍩轰簬鈥滆嫳鏂囧師鏂?瀹樻柟涓枃鈥濈殑鑷姩鏈杩唬銆傞€傜敤浜?Codex/OpenClaw/CC 绛変唬鐞嗙幆澧冦€?---
+description: 模型主导 + 工具协议的 Against the Storm 翻译 Skill。脚本只负责 prepare/validate/apply-repair/finalize，模型负责翻译与修复回写。
+---
 
-# Against The Storm Translation Closed Loop
+# Against The Storm Translation Skill
 
-## 鐩爣
+## 目标
 
-- 鍦ㄦ棤浜哄伐鏍″鍓嶆彁涓嬶紝瀹炵幇鏈浼樺厛銆佸彲鏀舵暃銆佸彲澶嶇幇鐨勪腑鏂囩炕璇戞祦绋嬨€?
-- 闈㈠悜闀挎枃鏈紝閬垮厤閫愯瘝鏌ヨ瀵艰嚧鐨勪綆鏁堢巼銆?
-- 缁熶竴鍏ュ彛鑴氭湰锛屼骇鍑鸿瘧鏂?+ 鎶ュ憡 + 鍙寔缁紨杩涚殑鏈琛ㄣ€?
+- 建立可追踪、可复现、可优化的翻译闭环。
+- 保障术语一致性和占位符/数字一致性。
+- 支持“快速出稿”和“严格终稿”两种节奏。
 
-## 鐩綍缁撴瀯
+## 标准流程（模型主导）
 
-- `translate_pipeline.py`锛氬崗璁伐鍏峰叆鍙ｏ紙`prepare -> validate -> apply-repair -> finalize`锛?- `autotune_terms.py`锛氬熀浜庤嫳鏂囧師鏂?+ 瀹樻柟涓枃鍙傝€冭嚜鍔ㄨ凯浠ｆ湳璇?
-- `build_index.py`锛氭瀯寤烘湰鍦?`kb.sqlite` 涓庤涔夌储寮?
-- `query_kb.py`锛氭湳璇绱?
-- `term_overrides.json`锛氭渶楂樹紭鍏堢骇鏈纭鍒?
-- `scripts/*.ps1`锛歅owerShell 蹇嵎鍏ュ彛
-- `references/playbook.md`锛氬畬鏁存搷浣滄墜鍐?
+1. `prepare`：生成 `translation.job.json`（分块、术语、参数快照）。
+2. 模型读取 job，写入 `translation.result.json`。
+3. `validate`：校验身份一致性、术语命中、占位符与数字一致性。
+4. 如存在 `repair.job.rN.json`，模型写入 `repair.result.rN.json`，再执行 `apply-repair`。
+5. `finalize`：输出最终译文和报告。
 
-## 蹇€熷紑濮?
+协议文件：
+- `translation.job.json`
+- `translation.result.json`
+- `validation.report.json`
+- `repair.job.rN.json`
+- `repair.result.rN.json`
 
-1. 瀹夎渚濊禆锛歚scripts/setup_env.ps1`
-2. 鏋勫缓 KB锛歚scripts/build_kb.ps1 -Input <zh-CN.txt鎴杍son>`
-3. 鎵ц缈昏瘧锛歚scripts/translate.ps1 -Mode agent -Input <en.txt> -Output <zh.txt> -KbDir <kb鐩綍>`
-4. 鏈夊畼鏂硅瘧鏂囨椂鑷姩杩唬锛歚scripts/autotune.ps1 -Input <en.txt> -Reference <official_zh.txt> -Output <zh.txt> -KbDir <kb鐩綍>`
+## 快速出稿（默认）
 
-## 鍏抽敭绾︽潫
+```powershell
+.\scripts\translate.ps1 -Mode agent -Source .\test\test.txt -Output .\test\output.fast.txt -Profile fast
+```
 
-- `term_overrides.json` 浼樺厛绾ф渶楂樸€?
-- 鍗犱綅绗?`{0}` / `%s` / 鏁板瓧榛樿寮轰竴鑷淬€?
-- 鏈鏃犳硶瀹夊叏纭畾鏃朵娇鐢?`[[TERM_UNRESOLVED:<TERM>]]` 鏀舵暃锛堝彲杩借釜锛屼笉鐬庣寽锛夈€?
-## 杈撳嚭鐗?
+- 默认 `-OneShot $true`：一轮校验后直接出稿，不阻塞在多轮 repair。
+- 默认 `-ReuseWork $true`：复用已有 job/result，避免重复 prepare。
 
-- 璇戞枃锛歚<output>`
-- 鎶ュ憡锛歚translation_report.json`
-- 鑷姩杩唬鎶ュ憡锛歚autotune_report.json`
+## 严格终稿（发布前）
 
+```powershell
+.\scripts\translate.ps1 -Mode agent -Source .\test\test.txt -Output .\test\output.strict.txt -Profile balanced -OneShot $false
+```
 
-## Strict Gate Update (2026-04)
+- 允许多轮 repair，直到严格校验通过后再 finalize。
 
-- `prepare` now writes stable identity fields into `translation.job.json`:
-  - `schema_version`
-  - `job_id`
-  - `input_sha256`
-- `translation.result.json` must contain matching `schema_version/job_id/input_sha256`.
-- `validate` now writes `passed` and returns non-zero under strict gate when:
-  - identity mismatch (`stale_result`, exit 2), or
-  - `violation_count > 0` / `repair_task_count > 0` (exit 3).
-- `finalize` now requires latest `validation.report.json` with `passed=true`.
-- `finalize` strict gate checks:
-  - `term_unresolved == 0`
-  - `placeholder_errors == 0`
-  - `en_only_line_ratio <= 0.10`
+## 术语与语言约束
 
-### New Compare Utility
+- `term_overrides.json` 最高优先级，命中后必须使用 `target`，禁止出现 `forbid`。
+- `locked_terms` 为硬约束，必须命中。
+- `p1_terms` 为高优先约束，未命中应进入 repair。
+- `p2_terms` 为建议约束，仅做 advisory，不阻断。
+- 占位符和数字必须与原文一致。
+- 无法确定术语时可使用 `[[TERM_UNRESOLVED:<TERM>]]`，但要尽量减少并在修复轮清零。
 
-- Added `compare_outputs.py` and `compare.report.rN.json`.
-- Metrics:
-  - `char_similarity`
-  - `line_similarity`
-  - `term_hit_rate`
-  - `en_only_line_ratio`
-  - `unresolved_tags`
-- Combined score formula:
-  - `0.6 * char_similarity + 0.2 * line_similarity + 0.2 * term_hit_rate`
+## 字符集与编码规范（强制）
 
-### Fixed 5-Round Autotune
+- 仓库内文本文件统一使用 `UTF-8`（建议 `UTF-8 without BOM`）。
+- Python 读写文本必须显式指定编码：
+- 读取：优先 `encoding="utf-8-sig"`（兼容历史 BOM 文件）。
+- 写入：统一 `encoding="utf-8"`。
+- PowerShell 执行前必须设置 UTF-8 控制台编码（已在 `scripts/translate.ps1` 固化）：
+- `[Console]::InputEncoding = [System.Text.UTF8Encoding]::new($false)`
+- `[Console]::OutputEncoding = [System.Text.UTF8Encoding]::new($false)`
+- 禁止通过不带编码控制的方式直接写中文协议文件（例如不安全的重定向链路），避免把中文写成 `???`。
+- 若出现乱码，先排查三件事：
+- 文件本体编码是否为 UTF-8。
+- 终端输入/输出编码是否为 UTF-8。
+- 脚本读写是否显式声明 UTF-8。
 
-- `autotune_terms.py` now runs fixed rounds (`--fixed-rounds`, default `5`).
-- Each round uses isolated workspace: `work/r1 ... work/r5`.
-- Only rounds passing strict gate participate in final selection.
-- Best successful round output is copied to requested `--output` and `--report`.
+## 常见问题
+
+- `stale_result`：`job_id/input_sha256/schema_version` 与当前 job 不一致，需要重写 result。
+- `validate` 失败：查看 `validation.report.json` 与 `repair.job.rN.json`。
+- 英文残留偏多：补充 `term_overrides.json`，或切换 `-OneShot $false` 进入修复闭环。

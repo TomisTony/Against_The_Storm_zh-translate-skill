@@ -430,6 +430,210 @@
       "scope": "auto_ref",
       "forbid": [],
       "enabled": true
+    },
+    {
+      "id": "auto_ref_test3_brineworks_update",
+      "source": "Brineworks Update",
+      "target": "盐田更新",
+      "match": "exact_ci",
+      "priority": 100,
+      "scope": "auto_ref_test3",
+      "forbid": [
+        "卤水作坊"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "auto_ref_test3_dim_square",
+      "source": "Dim Square",
+      "target": "昏暗广场",
+      "match": "exact_ci",
+      "priority": 100,
+      "scope": "auto_ref_test3",
+      "forbid": [],
+      "enabled": true
+    },
+    {
+      "id": "auto_ref_test3_petrified_necropolis",
+      "source": "Petrified Necropolis",
+      "target": "石化墓地",
+      "match": "exact_ci",
+      "priority": 100,
+      "scope": "auto_ref_test3",
+      "forbid": [],
+      "enabled": true
+    },
+    {
+      "id": "auto_ref_test3_blight_ridden_viceroy",
+      "source": "Blight-Ridden Viceroy",
+      "target": "疫腐病缠身的总督",
+      "match": "exact_ci",
+      "priority": 99,
+      "scope": "auto_ref_test3",
+      "forbid": [],
+      "enabled": true
+    },
+    {
+      "id": "auto_ref_test3_deep_pond",
+      "source": "Deep Pond",
+      "target": "深水池塘",
+      "match": "exact_ci",
+      "priority": 99,
+      "scope": "auto_ref_test3",
+      "forbid": [
+        "古碑"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "auto_ref_test3_lurker",
+      "source": "Lurker",
+      "target": "潜伏者",
+      "match": "exact_ci",
+      "priority": 99,
+      "scope": "auto_ref_test3",
+      "forbid": [],
+      "enabled": true
+    },
+    {
+      "id": "auto_ref_test3_rocky_ravine",
+      "source": "Rocky Ravine",
+      "target": "乱石峡谷",
+      "match": "exact_ci",
+      "priority": 100,
+      "scope": "auto_ref_test3",
+      "forbid": [],
+      "enabled": true
+    },
+    {
+      "id": "auto_ref_test3_basalt_trees",
+      "source": "Basalt Trees",
+      "target": "玄武岩树",
+      "match": "exact_ci",
+      "priority": 99,
+      "scope": "auto_ref_test3",
+      "forbid": [
+        "木材需求"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "auto_ref_test3_lumbermill",
+      "source": "Lumbermill",
+      "target": "锯木厂",
+      "match": "exact_ci",
+      "priority": 100,
+      "scope": "auto_ref_test3",
+      "forbid": [],
+      "enabled": true
+    },
+    {
+      "id": "auto_ref_test3_epic_cornerstones",
+      "source": "Epic Cornerstones",
+      "target": "史诗基石",
+      "match": "exact_ci",
+      "priority": 99,
+      "scope": "auto_ref_test3",
+      "forbid": [
+        "余烬工人"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "auto_ref_test3_legendary_sunken_chests",
+      "source": "Legendary Sunken Chests",
+      "target": "传奇沉没宝箱",
+      "match": "exact_ci",
+      "priority": 99,
+      "scope": "auto_ref_test3",
+      "forbid": [],
+      "enabled": true
+    },
+    {
+      "id": "auto_ref_test3_crashed_airship",
+      "source": "Crashed Airship",
+      "target": "坠毁飞艇",
+      "match": "exact_ci",
+      "priority": 100,
+      "scope": "auto_ref_test3",
+      "forbid": [
+        "坠毁的飞艇"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "auto_ref_test3_more_resolve_from_religion",
+      "source": "More Resolve from Religion",
+      "target": "更多来自宗教的满意度",
+      "match": "exact_ci",
+      "priority": 100,
+      "scope": "auto_ref_test3",
+      "forbid": [
+        "长期合约",
+        "更多决心",
+        "决心"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "auto_ref_test3_forsaken_town",
+      "source": "Forsaken Town",
+      "target": "被遗弃城镇",
+      "match": "exact_ci",
+      "priority": 100,
+      "scope": "auto_ref_test3",
+      "forbid": [
+        "被遗弃的地下室"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "auto_ref_test3_blood_price_contract",
+      "source": "Blood Price Contract",
+      "target": "血价合约",
+      "match": "exact_ci",
+      "priority": 100,
+      "scope": "auto_ref_test3",
+      "forbid": [],
+      "enabled": true
+    },
+    {
+      "id": "auto_ref_test3_forsaken_altar",
+      "source": "Forsaken Altar",
+      "target": "被遗弃祭坛",
+      "match": "exact_ci",
+      "priority": 100,
+      "scope": "auto_ref_test3",
+      "forbid": [
+        "被遗弃的地下室"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "auto_ref_test3_more_resolve",
+      "source": "More Resolve",
+      "target": "更多满意度",
+      "match": "exact_ci",
+      "priority": 100,
+      "scope": "auto_ref_test3",
+      "forbid": [
+        "长期合约",
+        "更多决心",
+        "决心"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "core_resolve_stat",
+      "source": "Resolve",
+      "target": "满意度",
+      "match": "exact_ci",
+      "priority": 100,
+      "scope": "system",
+      "forbid": [
+        "决心"
+      ],
+      "enabled": true
     }
   ]
 }

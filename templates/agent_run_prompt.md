@@ -1,28 +1,27 @@
 # Agent Run Prompt (Codex/OpenClaw/CC)
 
-当你使用本 Skill 执行翻译任务时，按以下闭环执行：
+你在本 Skill 中只做两件事：  
+1) 读写协议文件；2) 做翻译与修复决策。  
+脚本只做 util，不替你翻译。
 
-1. 运行 `translate_pipeline.py prepare`，生成 `translation.job.json`。
-2. 读取 `translation.job.json`，用当前模型完成翻译。
-3. 将结果写入 `translation.result.json`（字段：`items[].chunk_id` + `items[].translated_sentences`）。
-4. 运行 `translate_pipeline.py validate`，检查是否产生 `repair.job.rN.json`。
-5. 若存在 repair job，则生成对应 `repair.result.rN.json` 并运行 `translate_pipeline.py apply-repair`，然后再次 `validate`。
-6. 循环至无新增修复任务后，运行 `translate_pipeline.py finalize`，产出 `output` 与 `translation_report.json`。
+## 执行步骤
 
-约束：
-- 不引入外部人工步骤。
-- 严格遵守 `locked_terms`、`forbid`、占位符一致性。
-- 无法确定术语时允许 `[[TERM_UNRESOLVED:<TERM>]]` 收敛。
+1. 运行 `translate_pipeline.py prepare` 生成 `translation.job.json`。
+2. 读取 job，按 `items[].source_sentences` 逐句翻译。
+3. 写入 `translation.result.json`（必须带 `schema_version/job_id/input_sha256`）。
+4. 运行 `translate_pipeline.py validate --strict-gate true`。
+5. 若产生 `repair.job.rN.json`，只修复列出的句子，写 `repair.result.rN.json`，再运行 `apply-repair` + `validate`。
+6. 通过后运行 `translate_pipeline.py finalize --strict-gate true`。
 
+## 翻译硬约束
 
-## Strict Protocol Requirements (2026-04)
+- 必须遵守 `locked_terms`：命中 `target`，避免 `forbid`。
+- 占位符（如 `{0}`、`%s`）与数字必须与原句一致。
+- 对 `soft_terms`：在不冲突时优先中文化，不要无故保留英文术语。
+- 文风要求：自然中文，可读，不直译腔。
+- 无法确定术语时可用 `[[TERM_UNRESOLVED:<TERM>]]`，并在修复阶段优先消除。
 
-- When writing `translation.result.json`, include:
-  - `schema_version` (must match job)
-  - `job_id` (must match job)
-  - `input_sha256` (must match job)
-  - `items[].chunk_id`
-  - `items[].translated_sentences`
-- Run `validate --strict-gate true`; only proceed if it passes.
-- If `repair.job.rN.json` exists, write matching `repair.result.rN.json`, then run `apply-repair` and re-run `validate`.
-- Run `finalize --strict-gate true` only after `validation.report.json` has `passed=true`.
+## 快速出稿模式说明
+
+- 当流程以 one-shot 运行时，可先输出草稿，再按 `repair.job.rN.json` 做后续精修。
+- 即使是快速稿，也要优先保证术语中文化与占位符正确。

@@ -26,6 +26,36 @@ DEFAULT_PARAMS={"balanced":{
     "lock_margin_threshold":0.03,"max_repair_rounds":2,
     "promotion_min_frequency":5,"promotion_pass_runs":3,
     "unresolved_policy":"keep_en_with_tag","placeholder_strict":True,
+    "enable_p1_repairs":True,
+    "enable_entity_guard":True,
+    "enable_term_normalization":True,
+    "p1_score_threshold":0.1265,
+    "p2_score_threshold":0.1240,
+    "p1_coverage_threshold":0.67,
+    "p2_coverage_threshold":0.34,
+    "p1_max_terms":8,
+    "p2_max_terms":12,
+    "kb_disable_semantic":False,
+    "bootstrap_score_threshold":0.12,"bootstrap_margin_threshold":0.0003,
+    "bootstrap_min_frequency":1,"bootstrap_max_rules":300,
+    "drift_forbid_min_count":2,
+},
+"fast":{
+    "chunk_chars":1200,"chunk_chars_min":900,"chunk_chars_max":1500,
+    "batch_chunks":8,"kb_topk":3,"lock_score_threshold":0.35,
+    "lock_margin_threshold":0.03,"max_repair_rounds":2,
+    "promotion_min_frequency":5,"promotion_pass_runs":3,
+    "unresolved_policy":"keep_en_with_tag","placeholder_strict":True,
+    "enable_p1_repairs":True,
+    "enable_entity_guard":True,
+    "enable_term_normalization":True,
+    "p1_score_threshold":0.1265,
+    "p2_score_threshold":0.1240,
+    "p1_coverage_threshold":0.67,
+    "p2_coverage_threshold":0.34,
+    "p1_max_terms":8,
+    "p2_max_terms":12,
+    "kb_disable_semantic":True,
     "bootstrap_score_threshold":0.12,"bootstrap_margin_threshold":0.0003,
     "bootstrap_min_frequency":1,"bootstrap_max_rules":300,
     "drift_forbid_min_count":2,
@@ -34,6 +64,7 @@ PROTOCOL_SCHEMA_VERSION = 2
 STRICT_MAX_EN_ONLY_LINE_RATIO = 0.10
 
 RE_TERM_CANDIDATE=re.compile(r"\b(?:[A-Z][A-Za-z0-9'+/\-]{2,}|[A-Z]{2,})(?:\s+(?:[A-Z][A-Za-z0-9'+/\-]{2,}|[A-Z]{2,})){0,3}\b")
+RE_EN_TOKEN=re.compile(r"[A-Za-z][A-Za-z0-9']+")
 RE_PLACEHOLDER=re.compile(r"\{[^{}\n]+\}|%\d*\$?[sdif]|%[sdif]")
 RE_NUMERIC=re.compile(r"\d+(?:\.\d+)?%?")
 RE_UNRESOLVED=re.compile(r"\[\[TERM_UNRESOLVED:([^\]]+)\]\]")
@@ -48,6 +79,7 @@ HIGH_VALUE_KEYWORDS={
     "firekeeper","worker","scout","builder","carrier","miner","smith","job","profession",
     "cornerstone","perk","resolve","hostility","reputation","impatience","blight","rainpunk",
     "glade","danger","forbidden","effect","status","mechanic","dedication",
+    "town","panel","cycle","cache","equipment","city","biome","modifier","charm","timed","storage","recipe","farming","tool","surveying",
 }
 BOOTSTRAP_SOURCE_BLOCKLIST={"label","tooltip","header","objective","content","popup","dialogue","cycle","goal","npc","display","reward","order","news","menu","wiki"}
 COLLAPSE_BLOCKLIST_FIRST={"perk","effect","category","label","goal","order","reward","news","menu","wiki"}
@@ -238,7 +270,7 @@ def bootstrap_rules_from_kb(
         if lk in existing: continue
         if int(c["count"])<int(params["bootstrap_min_frequency"]): continue
         eval_query=str(c.get("key","")).strip() or src
-        hits=kb_search_cached(conn,kb_dir,eval_query,2,cache)
+        hits=kb_search_cached(conn,kb_dir,eval_query,2,cache,bool(params.get("kb_disable_semantic",False)))
         if not hits: continue
         top1=hits[0][0];top2=hits[1][0] if len(hits)>1 else 0.0;margin=float(top1)-float(top2)
         if float(top1)<float(params["bootstrap_score_threshold"]): continue
@@ -358,6 +390,14 @@ def extract_candidates(text:str)->List[str]:
         seen.add(k);out.append(token)
     return out
 
+def english_token_set(text:str)->set[str]:
+    out=set()
+    for tok in RE_EN_TOKEN.findall(str(text or "").lower()):
+        t=re.sub(r"[^a-z0-9]","",tok)
+        if len(t)>=3:
+            out.add(t)
+    return out
+
 def match_overrides(text:str,rules:List[Dict[str,Any]])->List[Dict[str,Any]]:
     out=[]
     for r in rules:
@@ -369,10 +409,13 @@ def match_overrides(text:str,rules:List[Dict[str,Any]])->List[Dict[str,Any]]:
             out.append({"source":src,"target":tgt,"key":r.get("id","override"),"score":1.0,"source_type":"override","forbid":list(r.get("forbid",[]))})
     return out
 
-def kb_search_cached(conn:sqlite3.Connection,kb_dir:Path,query:str,topk:int,cache:Dict[str,List[Tuple[float,Dict[str,Any]]]])->List[Tuple[float,Dict[str,Any]]]:
-    key=query.strip().lower()
+def kb_search_cached(conn:sqlite3.Connection,kb_dir:Path,query:str,topk:int,cache:Dict[str,List[Tuple[float,Dict[str,Any]]]],disable_semantic:bool=False)->List[Tuple[float,Dict[str,Any]]]:
+    key=f"{query.strip().lower()}|k={int(topk)}|sem={int(not disable_semantic)}"
     if key in cache:return cache[key]
-    hits=hybrid_search(conn=conn,kb_dir=kb_dir,query=query,topk=max(1,topk),fts_topk=max(20,topk),vec_topk=max(20,topk),w_fts=0.55,w_vec=0.45,model_name_override=None,disable_semantic=False)
+    hits=hybrid_search(conn=conn,kb_dir=kb_dir,query=query,topk=max(1,topk),fts_topk=max(20,topk),vec_topk=max(20,topk),w_fts=0.55,w_vec=0.45,model_name_override=None,disable_semantic=bool(disable_semantic))
+    if disable_semantic and not hits:
+        # In fast mode, fallback once to semantic retrieval for terminology recall.
+        hits=hybrid_search(conn=conn,kb_dir=kb_dir,query=query,topk=max(1,topk),fts_topk=max(20,topk),vec_topk=max(20,topk),w_fts=0.55,w_vec=0.45,model_name_override=None,disable_semantic=False)
     cache[key]=hits;return hits
 
 def build_terms_for_chunk(chunk:Chunk,rules:List[Dict[str,Any]],conn:sqlite3.Connection,kb_dir:Path,params:Dict[str,Any],cache:Dict[str,List[Tuple[float,Dict[str,Any]]]])->Tuple[List[Dict[str,Any]],List[Dict[str,Any]]]:
@@ -381,13 +424,79 @@ def build_terms_for_chunk(chunk:Chunk,rules:List[Dict[str,Any]],conn:sqlite3.Con
     for cand in extract_candidates(chunk.text):
         ck=cand.lower()
         if ck in locked:continue
-        hits=kb_search_cached(conn,kb_dir,cand,int(params["kb_topk"]),cache)
+        hits=kb_search_cached(conn,kb_dir,cand,int(params["kb_topk"]),cache,bool(params.get("kb_disable_semantic",False)))
         if not hits:continue
         top_score,top_rec=hits[0];second_score=hits[1][0] if len(hits)>1 else 0.0;margin=top_score-second_score
-        obj={"source":cand,"target":top_rec.get("zh",""),"key":top_rec.get("key",""),"score":round(float(top_score),6),"source_type":"kb","forbid":[]}
+        obj={
+            "source":cand,
+            "target":top_rec.get("zh",""),
+            "key":top_rec.get("key",""),
+            "entity":top_rec.get("entity",""),
+            "de_norm":top_rec.get("de_norm",""),
+            "domain":top_rec.get("domain",""),
+            "slot":top_rec.get("slot",""),
+            "score":round(float(top_score),6),
+            "margin":round(float(margin),6),
+            "source_type":"kb",
+            "forbid":[],
+        }
         if top_rec.get("zh") and float(top_score)>=float(params["lock_score_threshold"]) and float(margin)>=float(params["lock_margin_threshold"]): locked[ck]=obj
         else: soft.append(obj)
     return sorted(locked.values(),key=lambda x:len(x["source"]),reverse=True),soft
+
+def derive_priority_terms(
+    soft_terms:List[Dict[str,Any]],
+    locked_terms:List[Dict[str,Any]],
+    params:Dict[str,Any],
+)->Tuple[List[Dict[str,Any]],List[Dict[str,Any]]]:
+    weak_single_words={
+        "the","this","that","these","those","we","were","weve","we'll","were","you","your","our","their","its","it's","it","now","may","and","for","with","from","into","after","before","then",
+        "also","here","there","panel","event","effect","reward","order","orders","camp","city","water","queen","hand","trial","tools",
+    }
+    p1=[];p2=[];seen_locked={str(t.get("source","")).strip().lower() for t in locked_terms}
+    p1_th=float(params.get("p1_score_threshold",0.1265));p2_th=float(params.get("p2_score_threshold",0.1240))
+    p1_cov_th=float(params.get("p1_coverage_threshold",0.67));p2_cov_th=float(params.get("p2_coverage_threshold",0.34))
+    p1_cap=int(params.get("p1_max_terms",8));p2_cap=int(params.get("p2_max_terms",12))
+    for t in soft_terms:
+        src=str(t.get("source","")).strip();tgt=str(t.get("target","")).strip()
+        if not src or not tgt: continue
+        if src.lower() in seen_locked: continue
+        if not RE_CJK_CHAR.search(tgt): continue
+        words=[w for w in re.split(r"\s+",src) if w]
+        src_lc=src.lower()
+        alpha=re.sub(r"[^a-z]","",src_lc)
+        if len(words)==1:
+            if alpha in weak_single_words: continue
+            if "'" in src_lc or "’" in src_lc: continue
+            if len(alpha)<6: continue
+        src_tokens=english_token_set(src)
+        if not src_tokens: continue
+        rec_blob=" ".join([str(t.get("key","")),str(t.get("entity","")),str(t.get("de_norm","")),str(t.get("domain","")),str(t.get("slot",""))])
+        rec_tokens=english_token_set(rec_blob)
+        overlap=len(src_tokens & rec_tokens)
+        coverage=float(overlap/max(1,len(src_tokens)))
+        high_value=any(tok in HIGH_VALUE_KEYWORDS for tok in src_tokens)
+        if not high_value and len(src_tokens)<2:
+            continue
+        score=float(t.get("score",0.0))
+        item={
+            "source":src,
+            "target":tgt,
+            "key":t.get("key",""),
+            "score":round(score,6),
+            "coverage":round(coverage,6),
+            "source_type":str(t.get("source_type","kb") or "kb"),
+            "forbid":list(t.get("forbid",[])),
+        }
+        if score>=p1_th and coverage>=p1_cov_th:
+            p1.append(item)
+        elif score>=p2_th and coverage>=p2_cov_th:
+            p2.append(item)
+    p1=sorted(p1,key=lambda x:(-float(x.get("score",0.0)),-len(str(x.get("source",""))),str(x.get("source",""))))
+    p2=sorted(p2,key=lambda x:(-float(x.get("score",0.0)),-len(str(x.get("source",""))),str(x.get("source",""))))
+    if p1_cap>0: p1=p1[:p1_cap]
+    if p2_cap>0: p2=p2[:p2_cap]
+    return p1,p2
 
 def write_json(path:Path,obj:Dict[str,Any])->None:
     path.parent.mkdir(parents=True,exist_ok=True)
@@ -467,12 +576,79 @@ def validate_chunk(chunk:Chunk,translated_sentences:List[str],locked_terms:List[
                     violations.append({"chunk_id":chunk.chunk_id,"sentence_id":i,"type":"forbidden_term","source_term":source_term,"expected":target_term,"actual":bad,"phase":phase,"round":round_id})
     return violations
 
-def group_repair_tasks(chunk:Chunk,translated_sentences:List[str],locked_terms:List[Dict[str,Any]],violations:List[Dict[str,Any]])->List[Dict[str,Any]]:
-    bad=sorted({v["sentence_id"] for v in violations if v["type"] in {"missing_locked_term","forbidden_term","placeholder_mismatch","numeric_mismatch"}})
+def merge_terms_unique(*term_lists:List[Dict[str,Any]])->List[Dict[str,Any]]:
+    out=[];seen=set()
+    for terms in term_lists:
+        for t in terms:
+            src=str(t.get("source","")).strip().lower()
+            if not src or src in seen: continue
+            seen.add(src);out.append(t)
+    return out
+
+def validate_preferred_terms(
+    chunk:Chunk,
+    translated_sentences:List[str],
+    preferred_terms:List[Dict[str,Any]],
+    params:Dict[str,Any],
+    phase:str,
+    round_id:int,
+)->Tuple[List[Dict[str,Any]],List[Dict[str,Any]]]:
+    violations=[];advisories=[];src_sents=chunk.source_sentences
+    if len(translated_sentences)<len(src_sents): translated_sentences=translated_sentences+[""]*(len(src_sents)-len(translated_sentences))
+    if len(translated_sentences)>len(src_sents): translated_sentences=translated_sentences[:len(src_sents)]
+    enable_entity_guard=bool(params.get("enable_entity_guard",True))
+    enable_p1_repairs=bool(params.get("enable_p1_repairs",True))
+    for i,src in enumerate(src_sents):
+        out=translated_sentences[i]
+        for term in preferred_terms:
+            source_term=str(term.get("source","")).strip()
+            target_term=str(term.get("target","")).strip()
+            level=str(term.get("level","p1")).strip().lower() or "p1"
+            if not source_term or not target_term or not contains_term(src,source_term): continue
+            if target_term in out: continue
+            if level=="p2":
+                advisories.append({"chunk_id":chunk.chunk_id,"sentence_id":i,"type":"missing_advisory_term","source_term":source_term,"expected":target_term,"actual":out,"phase":phase,"round":round_id})
+                continue
+            if not enable_p1_repairs:
+                advisories.append({"chunk_id":chunk.chunk_id,"sentence_id":i,"type":"missing_preferred_term","source_term":source_term,"expected":target_term,"actual":out,"phase":phase,"round":round_id})
+                continue
+            vtype="missing_preferred_term"
+            if enable_entity_guard and contains_term(out,source_term):
+                vtype="untranslated_entity"
+            violations.append({"chunk_id":chunk.chunk_id,"sentence_id":i,"type":vtype,"source_term":source_term,"expected":target_term,"actual":out,"phase":phase,"round":round_id})
+    return violations,advisories
+
+def apply_term_normalization(
+    chunk:Chunk,
+    translated_sentences:List[str],
+    normalize_terms:List[Dict[str,Any]],
+)->Tuple[List[str],int]:
+    src_sents=chunk.source_sentences
+    out=list(translated_sentences)
+    if len(out)<len(src_sents): out.extend([""]*(len(src_sents)-len(out)))
+    if len(out)>len(src_sents): out=out[:len(src_sents)]
+    changed=0
+    for i,src in enumerate(src_sents):
+        cur=out[i]
+        for term in normalize_terms:
+            source_term=str(term.get("source","")).strip()
+            target_term=str(term.get("target","")).strip()
+            if not source_term or not target_term or not contains_term(src,source_term): continue
+            if target_term in cur: continue
+            cur,n=replace_term_occurrences(cur,source_term,target_term);changed+=n
+            for bad in term.get("forbid",[]):
+                bad=str(bad).strip()
+                if not bad: continue
+                cur,n=replace_term_occurrences(cur,bad,target_term);changed+=n
+        out[i]=cur
+    return out,changed
+
+def group_repair_tasks(chunk:Chunk,translated_sentences:List[str],locked_terms:List[Dict[str,Any]],preferred_terms:List[Dict[str,Any]],violations:List[Dict[str,Any]])->List[Dict[str,Any]]:
+    bad=sorted({v["sentence_id"] for v in violations if v["type"] in {"missing_locked_term","forbidden_term","placeholder_mismatch","numeric_mismatch","missing_preferred_term","untranslated_entity"}})
     tasks=[]
     for sid in bad:
-        src=chunk.source_sentences[sid];cur=translated_sentences[sid] if sid<len(translated_sentences) else "";terms=[t for t in locked_terms if contains_term(src,t["source"])]
-        tasks.append({"chunk_id":chunk.chunk_id,"sentence_id":sid,"source_sentence":src,"current_translation":cur,"locked_terms":terms})
+        src=chunk.source_sentences[sid];cur=translated_sentences[sid] if sid<len(translated_sentences) else "";terms=[t for t in locked_terms if contains_term(src,t["source"])];preferred=[t for t in preferred_terms if contains_term(src,str(t.get("source","")))]
+        tasks.append({"chunk_id":chunk.chunk_id,"sentence_id":sid,"source_sentence":src,"current_translation":cur,"locked_terms":terms,"preferred_terms":preferred})
     return tasks
 
 def apply_unresolved_policy(chunk:Chunk,translated_sentences:List[str],locked_terms:List[Dict[str,Any]],unresolved_policy:str)->int:
@@ -507,6 +683,16 @@ def resolve_params(args:argparse.Namespace)->Dict[str,Any]:
              "lock_margin_threshold":args.lock_margin_threshold,"max_repair_rounds":args.max_repair_rounds,
              "promotion_min_frequency":args.promotion_min_frequency,"promotion_pass_runs":args.promotion_pass_runs,
              "unresolved_policy":args.unresolved_policy,
+             "enable_p1_repairs":args.enable_p1_repairs,
+             "enable_entity_guard":args.enable_entity_guard,
+             "enable_term_normalization":args.enable_term_normalization,
+             "p1_score_threshold":args.p1_score_threshold,
+             "p2_score_threshold":args.p2_score_threshold,
+             "p1_coverage_threshold":args.p1_coverage_threshold,
+             "p2_coverage_threshold":args.p2_coverage_threshold,
+             "p1_max_terms":args.p1_max_terms,
+             "p2_max_terms":args.p2_max_terms,
+             "kb_disable_semantic":args.kb_disable_semantic,
              "bootstrap_score_threshold":args.bootstrap_score_threshold,
              "bootstrap_margin_threshold":args.bootstrap_margin_threshold,
              "bootstrap_min_frequency":args.bootstrap_min_frequency,
@@ -517,10 +703,18 @@ def resolve_params(args:argparse.Namespace)->Dict[str,Any]:
     if args.placeholder_strict is not None: params["placeholder_strict"]=args.placeholder_strict
     return params
 
-def compute_metrics(chunks:List[Chunk],translated_by_chunk:Dict[str,List[str]],terms_by_chunk:Dict[str,List[Dict[str,Any]]])->Dict[str,int]:
+def compute_metrics(
+    chunks:List[Chunk],
+    translated_by_chunk:Dict[str,List[str]],
+    terms_by_chunk:Dict[str,List[Dict[str,Any]]],
+    preferred_terms_by_chunk:Dict[str,List[Dict[str,Any]]]|None=None,
+)->Dict[str,int]:
     term_total=0;term_hit=0;placeholder_errors=0
+    preferred_total=0;preferred_hit=0
+    preferred_terms_by_chunk=preferred_terms_by_chunk or {}
     for chunk in chunks:
         translated=translated_by_chunk.get(chunk.chunk_id,[]);locked_terms=terms_by_chunk.get(chunk.chunk_id,[])
+        preferred_terms=preferred_terms_by_chunk.get(chunk.chunk_id,[])
         if len(translated)<len(chunk.source_sentences): translated=translated+[""]*(len(chunk.source_sentences)-len(translated))
         for i,src in enumerate(chunk.source_sentences):
             out=translated[i]
@@ -529,10 +723,24 @@ def compute_metrics(chunks:List[Chunk],translated_by_chunk:Dict[str,List[str]],t
                 if not contains_term(src,term["source"]): continue
                 term_total+=1
                 if term["target"] in out and all((not bad) or (bad not in out) for bad in term.get("forbid",[])): term_hit+=1
+            for term in preferred_terms:
+                source=str(term.get("source","")).strip();target=str(term.get("target","")).strip()
+                if not source or not target or not contains_term(src,source): continue
+                preferred_total+=1
+                if target in out: preferred_hit+=1
     unresolved=0
     for lines in translated_by_chunk.values():
         for line in lines: unresolved+=len(RE_UNRESOLVED.findall(line))
-    return {"term_total":term_total,"term_hit":term_hit,"term_miss":max(0,term_total-term_hit),"term_unresolved":unresolved,"placeholder_errors":placeholder_errors}
+    return {
+        "term_total":term_total,
+        "term_hit":term_hit,
+        "term_miss":max(0,term_total-term_hit),
+        "preferred_term_total":preferred_total,
+        "preferred_term_hit":preferred_hit,
+        "preferred_term_miss":max(0,preferred_total-preferred_hit),
+        "term_unresolved":unresolved,
+        "placeholder_errors":placeholder_errors,
+    }
 
 def apply_auto_promotion(overrides_path:Path,rules:List[Dict[str,Any]],term_stats:Dict[str,Dict[str,Any]],params:Dict[str,Any])->List[str]:
     state_path=overrides_path.with_suffix(".state.json")
@@ -576,7 +784,7 @@ def prepare_job(
         raise RuntimeError("No translatable content found in input.")
 
     rules=normalize_rules(load_overrides(overrides_path))
-    conn=sqlite3.connect(str(sqlite_path));cache={};terms_by_chunk={};soft_terms_by_chunk={};bootstrap_added=[]
+    conn=sqlite3.connect(str(sqlite_path));cache={};terms_by_chunk={};soft_terms_by_chunk={};p1_terms_by_chunk={};p2_terms_by_chunk={};bootstrap_added=[]
     try:
         if bootstrap_force or not rules:
             bootstrap_added=bootstrap_rules_from_kb(conn,kb_dir,rules,params,cache)
@@ -584,7 +792,9 @@ def prepare_job(
                 rules=normalize_rules(rules);save_overrides(overrides_path,rules)
         for chunk in chunks:
             locked,soft=build_terms_for_chunk(chunk=chunk,rules=rules,conn=conn,kb_dir=kb_dir,params=params,cache=cache)
+            p1,p2=derive_priority_terms(soft_terms=soft,locked_terms=locked,params=params)
             terms_by_chunk[chunk.chunk_id]=locked;soft_terms_by_chunk[chunk.chunk_id]=soft
+            p1_terms_by_chunk[chunk.chunk_id]=p1;p2_terms_by_chunk[chunk.chunk_id]=p2
     finally:
         conn.close()
 
@@ -596,6 +806,8 @@ def prepare_job(
             "source_sentences":c.source_sentences,
             "locked_terms":terms_by_chunk.get(c.chunk_id,[]),
             "soft_terms":soft_terms_by_chunk.get(c.chunk_id,[]),
+            "p1_terms":p1_terms_by_chunk.get(c.chunk_id,[]),
+            "p2_terms":p2_terms_by_chunk.get(c.chunk_id,[]),
         })
     payload={
         "version":1,
@@ -617,8 +829,8 @@ def prepare_job(
     }
     return payload
 
-def chunks_from_job(job:Dict[str,Any])->Tuple[List[Chunk],Dict[str,List[Dict[str,Any]]],Dict[str,List[Dict[str,Any]]],Dict[str,Any]]:
-    chunks=[];terms_by_chunk={};soft_terms_by_chunk={}
+def chunks_from_job(job:Dict[str,Any])->Tuple[List[Chunk],Dict[str,List[Dict[str,Any]]],Dict[str,List[Dict[str,Any]]],Dict[str,List[Dict[str,Any]]],Dict[str,List[Dict[str,Any]]],Dict[str,Any]]:
+    chunks=[];terms_by_chunk={};soft_terms_by_chunk={};p1_terms_by_chunk={};p2_terms_by_chunk={}
     for it in job.get("items",[]):
         cid=str(it.get("chunk_id","")).strip()
         if not cid:continue
@@ -628,8 +840,10 @@ def chunks_from_job(job:Dict[str,Any])->Tuple[List[Chunk],Dict[str,List[Dict[str
         chunks.append(Chunk(chunk_id=cid,text=text,source_sentences=sents))
         terms_by_chunk[cid]=[x for x in it.get("locked_terms",[]) if isinstance(x,dict)]
         soft_terms_by_chunk[cid]=[x for x in it.get("soft_terms",[]) if isinstance(x,dict)]
+        p1_terms_by_chunk[cid]=[x for x in it.get("p1_terms",[]) if isinstance(x,dict)]
+        p2_terms_by_chunk[cid]=[x for x in it.get("p2_terms",[]) if isinstance(x,dict)]
     params=dict(job.get("params",{})) or dict(DEFAULT_PARAMS["balanced"])
-    return chunks,terms_by_chunk,soft_terms_by_chunk,params
+    return chunks,terms_by_chunk,soft_terms_by_chunk,p1_terms_by_chunk,p2_terms_by_chunk,params
 
 def load_result_payload(path:Path)->Dict[str,Any]:
     payload=load_json(path)
@@ -774,10 +988,10 @@ def run_validate(args:argparse.Namespace)->int:
     if not job_path.exists(): raise FileNotFoundError(f"Job file not found: {job_path}. Run prepare first.")
     if not result_path.exists(): raise FileNotFoundError(f"Result file not found: {result_path}. Please fill translation result first.")
     job=load_json(job_path)
-    chunks,terms_by_chunk,_soft_terms,params=chunks_from_job(job)
+    chunks,terms_by_chunk,_soft_terms,p1_terms_by_chunk,p2_terms_by_chunk,params=chunks_from_job(job)
     result_payload=load_result_payload(result_path)
     result_map=load_result_map_from_payload(result_payload)
-    violations=[];repair_tasks=[];translated_by_chunk={}
+    violations=[];repair_tasks=[];translated_by_chunk={};advisories=[]
     identity_ok=is_result_identity_match(job,result_payload)
     if not identity_ok:
         violations.append(build_identity_mismatch_violation(job,result_payload,int(args.round)))
@@ -790,24 +1004,28 @@ def run_validate(args:argparse.Namespace)->int:
             cur=list(got) if got is not None else []
             translated_by_chunk[chunk.chunk_id]=list(cur)
             if missing:
-                repair_tasks.extend([{"chunk_id":chunk.chunk_id,"sentence_id":sid,"source_sentence":src,"current_translation":"","locked_terms":[t for t in terms_by_chunk.get(chunk.chunk_id,[]) if contains_term(src,str(t.get("source","")))]} for sid,src in enumerate(chunk.source_sentences)])
+                repair_tasks.extend([{"chunk_id":chunk.chunk_id,"sentence_id":sid,"source_sentence":src,"current_translation":"","locked_terms":[t for t in terms_by_chunk.get(chunk.chunk_id,[]) if contains_term(src,str(t.get("source","")))],"preferred_terms":[t for t in p1_terms_by_chunk.get(chunk.chunk_id,[]) if contains_term(src,str(t.get("source","")))]} for sid,src in enumerate(chunk.source_sentences)])
                 continue
             chunk_violations=validate_chunk(chunk,cur,terms_by_chunk.get(chunk.chunk_id,[]),params,"validate",int(args.round));violations.extend(chunk_violations)
-            repair_tasks.extend(group_repair_tasks(chunk,cur,terms_by_chunk.get(chunk.chunk_id,[]),chunk_violations))
-    metrics=compute_metrics(chunks,translated_by_chunk,terms_by_chunk)
+            preferred_terms=list(p1_terms_by_chunk.get(chunk.chunk_id,[]))+[dict(x,level="p2") for x in p2_terms_by_chunk.get(chunk.chunk_id,[])]
+            pref_violations,pref_advisories=validate_preferred_terms(chunk,cur,preferred_terms,params,"validate",int(args.round))
+            violations.extend(pref_violations);advisories.extend(pref_advisories)
+            repair_tasks.extend(group_repair_tasks(chunk,cur,terms_by_chunk.get(chunk.chunk_id,[]),p1_terms_by_chunk.get(chunk.chunk_id,[]),chunk_violations+pref_violations))
+    metrics=compute_metrics(chunks,translated_by_chunk,terms_by_chunk,preferred_terms_by_chunk=p1_terms_by_chunk)
     language_metrics=compute_language_metrics(chunks,translated_by_chunk)
     strict_gate=bool(args.strict_gate)
     passed=identity_ok and len(violations)==0 and len(repair_tasks)==0
-    report_payload={"version":1,"schema_version":PROTOCOL_SCHEMA_VERSION,"created_at":utc_now(),"round":int(args.round),"strict_gate":strict_gate,"identity_match":identity_ok,"passed":passed,"job_file":str(job_path),"result_file":str(result_path),"repair_job_file":str(repair_job_path),"repair_result_file":str(repair_result_path),"metrics":metrics,"language_metrics":language_metrics,"violation_count":len(violations),"repair_task_count":len(repair_tasks),"violations":violations,"repair_tasks":repair_tasks}
+    report_payload={"version":1,"schema_version":PROTOCOL_SCHEMA_VERSION,"created_at":utc_now(),"round":int(args.round),"strict_gate":strict_gate,"identity_match":identity_ok,"passed":passed,"job_file":str(job_path),"result_file":str(result_path),"repair_job_file":str(repair_job_path),"repair_result_file":str(repair_result_path),"metrics":metrics,"language_metrics":language_metrics,"violation_count":len(violations),"repair_task_count":len(repair_tasks),"advisory_count":len(advisories),"violations":violations,"repair_tasks":repair_tasks,"advisories":advisories}
     write_json(report_path,report_payload)
     if repair_tasks and identity_ok:
-        write_json(repair_job_path,{"version":1,"created_at":utc_now(),"round":int(args.round),"task":"Repair only listed sentences. Keep placeholders and numbers unchanged, satisfy locked_terms.","format":{"items":[{"chunk_id":"c_0001","sentence_id":0,"translated":"..."}]},"expected_result_file":str(repair_result_path),"items":repair_tasks})
+        write_json(repair_job_path,{"version":1,"created_at":utc_now(),"round":int(args.round),"task":"Repair only listed sentences. Keep placeholders and numbers unchanged, satisfy locked_terms and preferred_terms(p1).","format":{"items":[{"chunk_id":"c_0001","sentence_id":0,"translated":"..."}]},"expected_result_file":str(repair_result_path),"items":repair_tasks})
     elif repair_job_path.exists():
         repair_job_path.unlink()
     print(f"Validation report: {report_path}")
     print(f"Passed: {passed}")
     print(f"Violations: {len(violations)}")
     print(f"Repair tasks: {len(repair_tasks)}")
+    print(f"Advisories: {len(advisories)}")
     if repair_tasks:
         print(f"Repair job: {repair_job_path}")
         print(f"Expected repair result: {repair_result_path}")
@@ -825,7 +1043,7 @@ def run_apply_repair(args:argparse.Namespace)->int:
     if not job_path.exists(): raise FileNotFoundError(f"Job file not found: {job_path}")
     if not result_path.exists(): raise FileNotFoundError(f"Result file not found: {result_path}")
     if not repair_result_path.exists(): raise FileNotFoundError(f"Repair result not found: {repair_result_path}")
-    job=load_json(job_path);chunks,_,_,_=chunks_from_job(job)
+    job=load_json(job_path);chunks,_,_,_,_,_=chunks_from_job(job)
     result_payload=load_result_payload(result_path)
     if not is_result_identity_match(job,result_payload):
         raise RuntimeError("Result file identity mismatch. Please regenerate translation.result.json from current translation.job.json.")
@@ -862,7 +1080,7 @@ def run_finalize(args:argparse.Namespace)->int:
         if str(validation_payload.get("job_file",""))!=str(job_path) or str(validation_payload.get("result_file",""))!=str(result_path):
             raise RuntimeError("Finalize blocked: validate report does not match current job/result.")
     job=load_json(job_path)
-    chunks,terms_by_chunk,soft_terms_by_chunk,params=chunks_from_job(job)
+    chunks,terms_by_chunk,soft_terms_by_chunk,p1_terms_by_chunk,p2_terms_by_chunk,params=chunks_from_job(job)
     result_payload=load_result_payload(result_path)
     if not is_result_identity_match(job,result_payload):
         raise RuntimeError("Result file identity mismatch. Please regenerate translation.result.json from current translation.job.json.")
@@ -870,17 +1088,24 @@ def run_finalize(args:argparse.Namespace)->int:
     output_path=Path(args.output).resolve() if args.output else Path(str(job.get("output",""))).resolve()
     report_path=Path(args.report).resolve() if args.report else Path(str(job.get("report",""))).resolve()
     overrides_path=Path(str(job.get("overrides",""))).resolve()
-    violations=[];translated_by_chunk={}
+    violations=[];translated_by_chunk={};advisories=[];normalization_replacements=0
     for chunk in chunks:
         got=result_map.get(chunk.chunk_id);missing=add_alignment_violations(chunk,got,violations,"finalize",int(args.round))
         cur=list(got) if got is not None else []
         if missing: cur=[""]*len(chunk.source_sentences)
+        if bool(params.get("enable_term_normalization",True)):
+            normalize_terms=merge_terms_unique(terms_by_chunk.get(chunk.chunk_id,[]),p1_terms_by_chunk.get(chunk.chunk_id,[]))
+            cur,repl=apply_term_normalization(chunk,cur,normalize_terms)
+            normalization_replacements+=int(repl)
         unresolved=apply_unresolved_policy(chunk,cur,terms_by_chunk.get(chunk.chunk_id,[]),str(params.get("unresolved_policy","keep_en_with_tag")))
         if unresolved:
             violations.append({"chunk_id":chunk.chunk_id,"sentence_id":-1,"type":"term_unresolved_applied","source_term":"","expected":"","actual":str(unresolved),"phase":"finalize","round":int(args.round)})
         violations.extend(validate_chunk(chunk,cur,terms_by_chunk.get(chunk.chunk_id,[]),params,"final",int(args.round)))
+        preferred_terms=list(p1_terms_by_chunk.get(chunk.chunk_id,[]))+[dict(x,level="p2") for x in p2_terms_by_chunk.get(chunk.chunk_id,[])]
+        pref_violations,pref_advisories=validate_preferred_terms(chunk,cur,preferred_terms,params,"final",int(args.round))
+        violations.extend(pref_violations);advisories.extend(pref_advisories)
         translated_by_chunk[chunk.chunk_id]=cur
-    metrics=compute_metrics(chunks,translated_by_chunk,terms_by_chunk)
+    metrics=compute_metrics(chunks,translated_by_chunk,terms_by_chunk,preferred_terms_by_chunk=p1_terms_by_chunk)
     language_metrics=compute_language_metrics(chunks,translated_by_chunk)
     gate_failures=[]
     if metrics.get("term_unresolved",0)>0:
@@ -904,8 +1129,8 @@ def run_finalize(args:argparse.Namespace)->int:
         save_drift_history(drift_path,drift_history)
         if added: rules=normalize_rules(rules);save_overrides(overrides_path,rules)
         drift_forbid_added=[{"source":s,"alias":a} for s,a in added]
-    runtime_terms={cid:{"locked_terms":terms_by_chunk.get(cid,[]),"soft_terms":soft_terms_by_chunk.get(cid,[])} for cid in [c.chunk_id for c in chunks]}
-    report={"version":1,"schema_version":PROTOCOL_SCHEMA_VERSION,"created_at":utc_now(),"profile":job.get("profile","balanced"),"strict_gate":strict_gate,"passed":passed,"gate_failures":gate_failures,"validation_report_file":str(validation_report_path),"params":params,"input":str(job.get("input","")),"output":str(output_path),"kb_dir":str(job.get("kb_dir","")),"overrides":str(overrides_path),"work_dir":str(work_dir),"chunks":len(chunks),"latency_ms":int((time.time()-start_ts)*1000),"repair_rounds":int(args.round),"promoted_terms":promoted,"drift_forbid_added":drift_forbid_added,**metrics,"language_metrics":language_metrics,"runtime_terms":runtime_terms,"violations":violations}
+    runtime_terms={cid:{"locked_terms":terms_by_chunk.get(cid,[]),"p1_terms":p1_terms_by_chunk.get(cid,[]),"p2_terms":p2_terms_by_chunk.get(cid,[]),"soft_terms":soft_terms_by_chunk.get(cid,[])} for cid in [c.chunk_id for c in chunks]}
+    report={"version":1,"schema_version":PROTOCOL_SCHEMA_VERSION,"created_at":utc_now(),"profile":job.get("profile","balanced"),"strict_gate":strict_gate,"passed":passed,"gate_failures":gate_failures,"validation_report_file":str(validation_report_path),"params":params,"input":str(job.get("input","")),"output":str(output_path),"kb_dir":str(job.get("kb_dir","")),"overrides":str(overrides_path),"work_dir":str(work_dir),"chunks":len(chunks),"latency_ms":int((time.time()-start_ts)*1000),"repair_rounds":int(args.round),"promoted_terms":promoted,"drift_forbid_added":drift_forbid_added,"term_normalization_replacements":normalization_replacements,**metrics,"language_metrics":language_metrics,"runtime_terms":runtime_terms,"violations":violations,"advisories":advisories}
     report_path.parent.mkdir(parents=True,exist_ok=True);report_path.write_text(json.dumps(report,ensure_ascii=False,indent=2),encoding="utf-8")
     if strict_gate and not passed:
         print(f"Report: {report_path}")
@@ -925,6 +1150,16 @@ def add_prepare_args(p:argparse.ArgumentParser)->None:
     p.add_argument("--lock-margin-threshold",type=float);p.add_argument("--max-repair-rounds",type=int)
     p.add_argument("--promotion-min-frequency",type=int);p.add_argument("--promotion-pass-runs",type=int)
     p.add_argument("--unresolved-policy",default=None);p.add_argument("--placeholder-strict",type=bool_flag,default=None)
+    p.add_argument("--kb-disable-semantic",type=bool_flag,default=None)
+    p.add_argument("--enable-p1-repairs",type=bool_flag,default=None)
+    p.add_argument("--enable-entity-guard",type=bool_flag,default=None)
+    p.add_argument("--enable-term-normalization",type=bool_flag,default=None)
+    p.add_argument("--p1-score-threshold",type=float)
+    p.add_argument("--p2-score-threshold",type=float)
+    p.add_argument("--p1-coverage-threshold",type=float)
+    p.add_argument("--p2-coverage-threshold",type=float)
+    p.add_argument("--p1-max-terms",type=int)
+    p.add_argument("--p2-max-terms",type=int)
     p.add_argument("--bootstrap-force",action="store_true")
     p.add_argument("--bootstrap-score-threshold",type=float)
     p.add_argument("--bootstrap-margin-threshold",type=float)
