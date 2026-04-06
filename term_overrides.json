@@ -634,6 +634,30 @@
         "决心"
       ],
       "enabled": true
+    },
+    {
+      "id": "core_settlement_singular",
+      "source": "Settlement",
+      "target": "定居点",
+      "match": "exact_ci",
+      "priority": 100,
+      "scope": "core",
+      "forbid": [
+        "聚落"
+      ],
+      "enabled": true
+    },
+    {
+      "id": "core_settlement_plural",
+      "source": "Settlements",
+      "target": "定居点",
+      "match": "exact_ci",
+      "priority": 100,
+      "scope": "core",
+      "forbid": [
+        "聚落"
+      ],
+      "enabled": true
     }
   ]
 }
